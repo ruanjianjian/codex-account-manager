@@ -2,7 +2,7 @@
 
 A local-first macOS menu-bar app for multiple Codex accounts. 原生 macOS 多账号额度组件。
 
-**测试版 v0.2.0-beta.1** · macOS 14+ · 首发下载包仅 Apple Silicon · MIT
+**测试版 v0.3.0-beta.1** · macOS 14+ · 首发下载包仅 Apple Silicon · MIT
 
 独立社区工具，与 OpenAI、X、DeepSeek 无隶属或背书关系。所有账号都由使用者自行登录；不附带账号、API Key、Cookie 或任何个人登录数据。
 
@@ -15,6 +15,20 @@ A local-first macOS menu-bar app for multiple Codex accounts. 原生 macOS 多�
 - 可选 Tibo X 监控：个人 X 登录后每分钟读取主页可见帖子，新重置相关帖触发所有账号官方额度查询。首次只建立基线，不重播历史帖，不使用 banked reset。
 
 额度是服务端账号总额度，包含该账号在其他电脑上的使用，无需在其他电脑也装本工具。不能按设备拆分消耗，也不把百分比换算成 token。
+
+## v0.3.0 新增：本机自动账号路由（实验）
+
+1. 先连接自己的账号，在设置里选择本地文件凭据模式。
+2. 设置 → **自动账号路由**。开启后保存原 Codex 配置，并配置本机网关。
+3. 结束手头任务，重启 Codex 并**新建会话**。之后请求由网关选择账号，菜单栏组件显示最近承接请求的账号；无需为每个请求切换桌面登录。
+4. 默认保持会话使用同一账号，新会话优先选择较快重置的可用账号。可在设置中固定账号，也可点击卡片的账号名称选择。仅输出开始前的可重试失败会尝试备用账号。
+5. 关闭开关会恢复原 provider，保留期间对其他设置的修改；如网关配置项本身被其他程序改动，会拒绝覆盖并保留备份。关闭后同样重启 Codex 并新建会话。
+
+**使用期间保持管家运行。** 私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
+
+这版借鉴 Magpie 的账号池、会话固定和失败接替设计，使用独立实现的 Go 辅助进程，并未复制其源码或完整兼容层。真实官方 CLI 的模型回复与终端工具调用已验证；默认 Codex 桌面重启后的完整交互仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放；加密历史及压缩状态依赖原账号，不能任意跨账号续接，网关重启后可能需显式选择原账号或新建会话。自定义 provider 可能影响云端会话、远程控制等功能，不承诺原生功能完全一致。
+
+网关只监听本机，使用独立随机密钥；只导出短期 access token，沿用原采集进程管理 OAuth 刷新。账号认证文件保持原样，不新增钥匙串访问。网关凭据及配置备份位于数据目录 `gateway/`，禁止上传。详见 [网关说明](Gateway/README.md) 与 [验证记录](docs/VALIDATION.md)。
 
 ## v0.2.0 新增：切换桌面账号与文件凭据模式
 
@@ -31,7 +45,7 @@ A local-first macOS menu-bar app for multiple Codex accounts. 原生 macOS 多�
 
 ## 安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.2.0-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.3.0-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 **Codex Accounts Beta.app** 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。本版开发验证使用 CLI 0.154.0；旧版可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
@@ -53,12 +67,13 @@ A local-first macOS menu-bar app for multiple Codex accounts. 原生 macOS 多�
 
 ## 从源码构建
 
-需要完整 Xcode（Swift 6 工具链）、macOS 14+。测试 mock 还需要 Python 3。构建当前 Mac 架构；Intel 源码构建尚未验收，首发不提供 Intel 下载包。
+需要完整 Xcode（Swift 6 工具链）、Go 1.26.8+、macOS 14+。测试 mock 还需要 Python 3。构建当前 Mac 架构；Intel 源码构建尚未验收，首发不提供 Intel 下载包。
 
 ```sh
 git clone https://github.com/ruanjianjian/codex-account-manager.git
 cd codex-account-manager
 swift test
+(cd Gateway && go test -race ./...)
 ./scripts/build.sh
 ./scripts/install.sh
 ```
@@ -71,7 +86,7 @@ swift test
 
 - 初次启动为空账号列表，默认关闭公告监控、通知、开机启动和全局快捷键；可在设置中启用。
 - 公开版标识为 `io.github.ruanjianjian.codex-accounts`，数据独立保存在 `~/Library/Application Support/CodexAccountsPublic/`。
-- 不自动导入其他应用的数据。只有点击账号名称并确认“切换并重启”才更改默认 Codex 桌面的登录。WebKit 的 X 登录态和应用偏好也使用公开版独立身份。
+- 不自动导入其他应用的数据。手动切号会更改默认 Codex 桌面登录；开启自动路由会修改默认 Codex 的 provider 配置，但不修改登录文件。WebKit 的 X 登录态和应用偏好也使用公开版独立身份。
 - 若已有个人构建，可同时保留；不要给两者配置相同快捷键。不同 Codex 客户端同时发起 OAuth 可能争用 localhost 回调端口，请按次完成授权。
 - 账号菜单可重新连接或移除连接。钥匙串可能要求首次访问授权；系统安全策略、更新或登录失效仍可能要求重新验证，不能保证永远不弹窗。
 
@@ -89,17 +104,17 @@ DeepSeek 手动测试入口是实验功能，**目前未验证能成功抓取 X*
 
 详见 [PRIVACY.md](PRIVACY.md)、[SECURITY.md](SECURITY.md) 和 [测试版验证记录](docs/VALIDATION.md)。请勿在 Issue 上传账户目录、Cookie、Key、OAuth 回调链接或未经脱敏的截图。
 
-账号/额度读取使用官方 Codex app-server 的实验协议，不保证所有套餐、CLI 版本或未来接口兼容。额度查询没有模型推理请求，不会自动切号，也不代用重置券。主动切号会重启默认 Codex 桌面。实际额度以官方返回为准。
+账号/额度读取使用官方 Codex app-server 的实验协议，不保证所有套餐、CLI 版本或未来接口兼容。额度查询本身不发起模型推理，也不代用重置券。开启路由后，模型请求会自动选择账号；关闭路由时，主动切号仍会重启默认 Codex 桌面。实际额度以官方返回为准。
 
 ## 卸载
 
-先在公开版设置中关闭「登录 Mac 时启动」，按需从账号菜单移除账号连接，然后退出并将 **Codex Accounts Beta.app** 移到废纸篓。删除应用本身不会删除登录和缓存。如需清除，使用设置里的「打开本机数据目录」核对公开版目录后手动删除；X 网站数据由系统 WebKit 存储，应用重装后可能仍保留。不要删除其他客户端的目录或钥匙串条目。
+先在公开版设置中关闭「自动账号路由」并重启 Codex，再关闭「登录 Mac 时启动」，按需从账号菜单移除账号连接，然后退出并将 **Codex Accounts Beta.app** 移到废纸篓。删除应用本身不会删除登录和缓存。如需清除，使用设置里的「打开本机数据目录」核对公开版目录后手动删除；X 网站数据由系统 WebKit 存储，应用重装后可能仍保留。不要删除其他客户端的目录或钥匙串条目。
 
 ## 致谢与设计参考
 
-感谢 [yetone](https://github.com/yetone) 的开源项目 [Magpie](https://github.com/yetone/magpie)。本项目后续的本机网关与多账号自动路由方案，借鉴了 Magpie 的设计：统一承接模型请求、在账号额度耗尽时自动选择备用账号，以及尽量让同一会话保持使用同一账号。
+感谢 [yetone](https://github.com/yetone) 的开源项目 [Magpie](https://github.com/yetone/magpie)。本机网关与多账号自动路由借鉴了它的账号池、会话固定、输出前失败接替设计。
 
-目前发布的 `v0.2.0-beta.1` 尚未集成 Magpie 网关或复用其源码，仍使用上文说明的“切换并重启”方式。此处说明的是后续方案的设计来源；若后续复用源码，将保留对应的版权、许可证与第三方声明。Magpie 使用 [MIT 许可证](https://github.com/yetone/magpie/blob/6e080ca0440ebe8d75b8eedd5bc78dd508542bed/LICENSE)，本项目独立开发与维护。
+当前网关为独立实现，没有复制或打包 Magpie 源码；仅实现本项目需要的 Codex HTTP/SSE 路由，不能视为完整的 Magpie 移植。设计调研基于 [6e080ca](https://github.com/yetone/magpie/tree/6e080ca0440ebe8d75b8eedd5bc78dd508542bed)。Magpie 使用 [MIT 许可证](https://github.com/yetone/magpie/blob/6e080ca0440ebe8d75b8eedd5bc78dd508542bed/LICENSE)，本项目独立开发与维护。
 
 ## 贡献
 

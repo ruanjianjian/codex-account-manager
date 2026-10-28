@@ -66,7 +66,8 @@ public enum ClientFailure: Error, LocalizedError {
         let proc = Process(), stdin = Pipe(), stdout = Pipe()
         proc.executableURL = executable
         guard ["keyring", "file"].contains(credentialStore) else { throw ClientFailure.fileAccess }
-        proc.arguments = ["app-server", "--listen", "stdio://", "-c", "cli_auth_credentials_store=\"\(credentialStore)\""]
+        // Account collection must retain ChatGPT auth even when inference uses our custom provider.
+        proc.arguments = ["app-server", "--listen", "stdio://", "-c", "cli_auth_credentials_store=\"\(credentialStore)\"", "-c", "model_provider=\"openai\""]
         proc.environment = Self.isolatedEnvironment(home: home, inherited: ProcessInfo.processInfo.environment)
         proc.currentDirectoryURL = home
         proc.standardInput = stdin; proc.standardOutput = stdout; proc.standardError = FileHandle.nullDevice

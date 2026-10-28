@@ -4,6 +4,8 @@ for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request: continue
     method=request['method']
+    if method=='probe/provider':
+        print(json.dumps({'id':request['id'],'result':{'officialProvider':'model_provider=\"openai\"' in sys.argv}}),flush=True); continue
     if method=='probe/timeout': continue
     if method=='probe/keychain':
         print(json.dumps({'id':request['id'],'error':{'code':-32603,'message':'Failed to load from keyring secret-must-not-escape'}}),flush=True); continue

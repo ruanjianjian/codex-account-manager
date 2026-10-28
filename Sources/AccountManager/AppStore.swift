@@ -31,6 +31,12 @@ enum SlotStatus: Equatable {
     private let accountDesktop = AccountDesktopLauncher()
     private lazy var sharedDesktop = SharedDesktopSwitcher(root: root)
     @Published var migratingCredentials = false
+    @Published var gatewayEnabled = UserDefaults.standard.bool(forKey: "gateway.enabled")
+    @Published var gatewayReady = false
+    @Published var gatewayCaption = "自动路由未开启"
+    @Published var gatewayAccount: String?
+    @Published var gatewayPreferred = UserDefaults.standard.string(forKey: "gateway.preferred") ?? ""
+    private lazy var gateway = GatewayController(root: root)
     var usesFileCredentials: Bool { sharedDesktop.fileStore.enabled }
     @Published var banner: String?
     @Published var now = Date()
@@ -150,7 +156,71 @@ enum SlotStatus: Equatable {
             self?.nextPoll.removeAll(); self?.refreshAll(); self?.checkResetAnnouncements(force: true)
         } }
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.tick() } })
+        setupGateway()
         Task { await refreshSequentially() }
+    }
+    private func setupGateway() {
+        gateway.onEvent = { [weak self] kind, id, code in
+            guard let self else { return }
+            switch kind {
+            case "ready":
+                do {
+                    try self.gateway.install(); self.gatewayReady = true
+                    self.gatewayCaption = "网关就绪 · 重启 Codex 后在新会话使用"
+                } catch { self.gatewayReady = false; self.gatewayCaption = error.localizedDescription }
+            case "routing":
+                self.gatewayAccount = id
+                self.gatewayCaption = "正在使用 \(id.flatMap { self.slot($0)?.displayName } ?? "账号")"
+            case "completed": self.gatewayCaption = "路由成功 · \(id.flatMap { self.slot($0)?.displayName } ?? "账号")"
+            case "refused":
+                self.gatewayCaption = "账号暂不可用，正在尝试其他账号"
+                if let id, code == 401 { self.refresh(id) }
+            case "interrupted": self.gatewayCaption = "回复中断，未重复执行；请在 Codex 中重试"
+            case "stopped": self.gatewayReady = false; self.gatewayCaption = "网关已停止 · 在设置中重试或关闭自动路由"
+            default: break
+            }
+        }
+        if gatewayEnabled || CommandLine.arguments.contains("--enable-gateway") { setGatewayEnabled(true, confirm: false) }
+    }
+    private func updateGatewayPool() throws {
+        guard usesFileCredentials else { throw GatewayConfigurationError.credentials }
+        var accounts: [GatewayAccount] = []
+        for slot in saved.accounts {
+            guard let expected = slot.expectedAccountID else { continue }
+            if collectorRetry.paused.contains(slot.id) { continue }
+            if case .wrongAccount = status[slot.id] { continue }
+            let home = sharedDesktop.selection?.slotID == slot.id ? sharedDesktop.home : root.appendingPathComponent("accounts/\(slot.id)")
+            let auth = home.appendingPathComponent("auth.json")
+            guard auth.standardizedFileURL == auth.resolvingSymlinksInPath(),
+                  let data = try? Data(contentsOf: auth), let credential = try? DesktopCredential(data, expected: expected) else { continue }
+            let windows = slot.snapshot?.rates.windows ?? []
+            let spent = windows.contains { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
+            if let value = try? GatewayAccount(id: slot.id, credential: credential, available: !spent, reset: windows.compactMap(\.resetsAt).min() ?? 0) { accounts.append(value) }
+        }
+        try gateway.save(accounts: accounts, preferred: gatewayPreferred)
+    }
+    func setGatewayEnabled(_ enabled: Bool, confirm: Bool = true) {
+        guard !preview, persistenceEnabled else { return }
+        if enabled && confirm && !gatewayEnabled {
+            let alert = NSAlert(); alert.messageText = "启用自动账号路由？"
+            alert.informativeText = "推理请求将通过本机网关选择账号，登录文件保持原样。首次启用后需重启 Codex 并新建会话；API provider 模式可能影响云端会话和远程控制。旧会话含加密状态时请继续原账号，或关闭路由。"
+            alert.addButton(withTitle: "启用自动路由"); alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        do {
+            if enabled {
+                guard loginSlotID == nil, launchingDesktop.isEmpty, !sharedDesktop.pending else { throw GatewayConfigurationError.unavailable }
+                try updateGatewayPool(); try gateway.start(); gatewayCaption = "正在启动本机网关…"
+            } else {
+                try gateway.stop(restore: true); gatewayReady = false; gatewayAccount = nil
+                gatewayCaption = "已恢复原配置 · 重启 Codex 生效"
+            }
+            gatewayEnabled = enabled; UserDefaults.standard.set(enabled, forKey: "gateway.enabled")
+        } catch { banner = error.localizedDescription; gatewayCaption = error.localizedDescription }
+    }
+    func selectGatewayAccount(_ id: String) {
+        gatewayPreferred = id; UserDefaults.standard.set(id, forKey: "gateway.preferred")
+        do { try updateGatewayPool() } catch { banner = error.localizedDescription }
     }
     var healthy: Set<String> { Set(status.filter { $0.value == .connected }.map(\.key)) }
     var connectedCount: Int { healthy.count }
@@ -310,6 +380,7 @@ enum SlotStatus: Equatable {
     }
     private func tick() {
         now = Date(); onChange?()
+        if gatewayEnabled { do { try updateGatewayPool() } catch { gatewayCaption = error.localizedDescription } }
         checkResetAnnouncements()
         retryResetRefresh()
         if let started = loginStarted, now.timeIntervalSince(started) > 600 {
@@ -480,6 +551,7 @@ enum SlotStatus: Equatable {
         }
     }
     func openAccountDesktop(_ id: String) {
+        if gatewayEnabled { selectGatewayAccount(id); gatewayCaption = "新请求优先使用 \(slot(id)?.displayName ?? "所选账号")"; return }
         guard canConnect, let selected = slot(id), selected.expectedAccountID != nil,
               loginSlotID == nil, launchingDesktop.isEmpty else { return }
         // This check is read-only. Explain an existing blocker before asking for a restart.
@@ -532,6 +604,7 @@ enum SlotStatus: Equatable {
         }
     }
     func desktopActionLabel(_ id: String) -> String {
+        if gatewayEnabled { return "将此账号用于网关新请求" }
         if !launchingDesktop.isEmpty { return "正在切换 Codex…" }
         if sharedDesktop.pending { return "恢复未完成的切换…" }
         return sharedDesktop.selection?.slotID == id ? "重新打开当前账号的 Codex…" : "切换到此账号（保留项目和会话）…"
@@ -856,6 +929,7 @@ enum SlotStatus: Equatable {
         cancelDeepSeekTest(); deepSeekKey = ""; deepSeekHasKey = false; deepSeekError = nil
     }
     func shutdown() {
+        try? gateway.stop(restore: false)
         personalXTask?.cancel(); xBrowser?.stop()
         clearDeepSeekKey()
         timer?.invalidate(); resetCheckTask?.cancel()

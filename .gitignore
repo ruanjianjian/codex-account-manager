@@ -20,3 +20,9 @@ deepseek-test-result.json
 *.mobileprovision
 __pycache__/
 *.pyc
+
+# Local routing credentials and rollback copies
+gateway/pool.json
+local.key
+config.before-gateway
+config.gateway-applied

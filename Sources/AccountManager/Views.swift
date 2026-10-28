@@ -103,6 +103,19 @@ struct GeneralSettings: View {
         VStack(alignment: .leading, spacing: 20) {
             Text("管家设置").font(.title2.weight(.semibold))
             VStack(alignment: .leading, spacing: 7) {
+                Toggle("自动账号路由", isOn: Binding(get: { store.gatewayEnabled }, set: { store.setGatewayEnabled($0) }))
+                Text(store.gatewayCaption).font(.caption).foregroundStyle(.secondary)
+                if store.gatewayEnabled {
+                    Picker("使用账号", selection: Binding(get: { store.gatewayPreferred }, set: store.selectGatewayAccount)) {
+                        Text("自动选择").tag("")
+                        ForEach(store.saved.accounts) { Text($0.displayName).tag($0.id) }
+                    }
+                    if !store.gatewayReady { Button("重试启动网关") { store.setGatewayEnabled(true, confirm: false) } }
+                }
+                Text("本机网关按会话选择账号，额度不足时尝试备用账号。首次启用或关闭后需重启 Codex，新建会话使用；已输出内容或绑定账号的加密历史不会自动重放。使用期间请保持管家运行。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 7) {
                 Text("登录存储").font(.headline)
                 Text(store.usesFileCredentials ? "本机文件 · 仅当前系统用户可读写" : "系统钥匙串 · 跨应用写回可能再次要求授权")
                     .font(.caption).foregroundStyle(.secondary)

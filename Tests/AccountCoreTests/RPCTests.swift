@@ -7,6 +7,13 @@ final class RPCTests: XCTestCase {
         let home = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TEST_ARTIFACTS_DIR"] ?? root.appendingPathComponent(".test-artifacts").path).appendingPathComponent("rpc-tests/\(UUID().uuidString)")
         return RPCClient(home: home, executable: root.appendingPathComponent("scripts/mock_rpc.py"))
     }
+    @MainActor func testCollectorUsesOfficialProviderWithGatewayConfigured() async throws {
+        let client = makeClient(); defer { client.stop() }
+        try FileManager.default.createDirectory(at: client.home, withIntermediateDirectories: true)
+        try Data("model_provider = \"codex_accounts_gateway\"\n".utf8).write(to: client.home.appendingPathComponent("config.toml"))
+        let result = try await client.request("probe/provider")
+        XCTAssertEqual(result["officialProvider"] as? Bool, true)
+    }
     @MainActor func testFragmentedResponseAndNotificationDoNotLoseRequests() async throws {
         let client = makeClient(); defer { client.stop() }
         var notified = false
