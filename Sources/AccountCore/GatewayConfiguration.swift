@@ -26,6 +26,10 @@ public struct GatewayConfiguration {
         guard path.standardizedFileURL == path.resolvingSymlinksInPath() else { throw GatewayConfigurationError.conflict }
         if installed {
             _ = try checkedCurrent()
+            if try parts(String(contentsOf: applied, encoding: .utf8)).base != nil { return }
+            // First restore our old fields, preserving concurrent edits, then install native routing.
+            try restore()
+            try install(key: key, port: port)
             return
         }
         let original = FileManager.default.fileExists(atPath: path.path) ? try Data(contentsOf: path) : Data()
@@ -35,9 +39,9 @@ public struct GatewayConfiguration {
         let lines = text.components(separatedBy: .newlines).filter { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("[") { inTop = false }
-            return !(inTop && trimmed.range(of: #"^model_provider\s*="# , options: .regularExpression) != nil)
+            return !(inTop && trimmed.range(of: #"^(model_provider|openai_base_url)\s*="# , options: .regularExpression) != nil)
         }
-        let result = "model_provider = \"codex_accounts_gateway\"\n" + lines.joined(separator: "\n") + """
+        let result = "model_provider = \"openai\"\nopenai_base_url = \"http://127.0.0.1:\(port)/backend-api/codex\"\n" + lines.joined(separator: "\n") + """
 
 
         [model_providers.codex_accounts_gateway]
@@ -57,7 +61,7 @@ public struct GatewayConfiguration {
         // If interrupted here the app sees installed=true and refuses unsafe restoration.
         try PrivateAtomicFile.write(Data(result.utf8), to: path)
     }
-    private func parts(_ text: String) throws -> (provider: String, block: String, remainder: String) {
+    private func parts(_ text: String) throws -> (provider: String, base: String?, block: String, remainder: String) {
         guard !text.contains("\"\"\""), !text.contains("'''") else { throw GatewayConfigurationError.conflict }
         let pattern = #"(?m)^\[model_providers\.codex_accounts_gateway\][^\n]*\n(?:[^\[][^\n]*\n|\n)*"#
         let regex = try NSRegularExpression(pattern: pattern)
@@ -67,23 +71,26 @@ public struct GatewayConfiguration {
         let range = matches[0].range
         let block = ns.substring(with: range)
         let withoutBlock = ns.replacingCharacters(in: range, with: "")
-        var top = true, providers: [String] = []
+        var top = true, providers: [String] = [], bases: [String] = []
         let rest = withoutBlock.components(separatedBy: "\n").filter { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("[") { top = false }
+            if top && trimmed.range(of: #"^openai_base_url\s*="# , options: .regularExpression) != nil {
+                bases.append(line); return false
+            }
             if top && trimmed.range(of: #"^model_provider\s*="# , options: .regularExpression) != nil {
                 providers.append(line); return false
             }
             return true
         }.joined(separator: "\n")
-        guard providers.count == 1 else { throw GatewayConfigurationError.conflict }
-        return (providers[0], block, rest)
+        guard providers.count == 1, bases.count <= 1 else { throw GatewayConfigurationError.conflict }
+        return (providers[0], bases.first, block, rest)
     }
     private func checkedCurrent() throws -> String {
         guard path.standardizedFileURL == path.resolvingSymlinksInPath() else { throw GatewayConfigurationError.conflict }
         let current = try String(contentsOf: path, encoding: .utf8)
         let a = try parts(String(contentsOf: applied, encoding: .utf8)), b = try parts(current)
-        guard a.provider == b.provider, a.block == b.block else { throw GatewayConfigurationError.conflict }
+        guard a.provider == b.provider, a.base == b.base, a.block == b.block else { throw GatewayConfigurationError.conflict }
         return current
     }
     public func restore() throws {
@@ -97,7 +104,7 @@ public struct GatewayConfiguration {
             let originalProvider = String(decoding: original, as: UTF8.self).components(separatedBy: "\n").filter { line in
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.hasPrefix("[") { top = false }
-                return top && trimmed.range(of: #"^model_provider\s*="# , options: .regularExpression) != nil
+                return top && trimmed.range(of: #"^(model_provider|openai_base_url)\s*="# , options: .regularExpression) != nil
             }
             let rest = try parts(current).remainder
             let result = (originalProvider.isEmpty ? "" : originalProvider.joined(separator: "\n") + "\n") + rest

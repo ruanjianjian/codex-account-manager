@@ -67,7 +67,7 @@ public enum ClientFailure: Error, LocalizedError {
         proc.executableURL = executable
         guard ["keyring", "file"].contains(credentialStore) else { throw ClientFailure.fileAccess }
         // Account collection must retain ChatGPT auth even when inference uses our custom provider.
-        proc.arguments = ["app-server", "--listen", "stdio://", "-c", "cli_auth_credentials_store=\"\(credentialStore)\"", "-c", "model_provider=\"openai\""]
+        proc.arguments = ["app-server", "--listen", "stdio://", "-c", "cli_auth_credentials_store=\"\(credentialStore)\"", "-c", "model_provider=\"openai\"", "-c", "openai_base_url=\"https://chatgpt.com/backend-api/codex\""]
         proc.environment = Self.isolatedEnvironment(home: home, inherited: ProcessInfo.processInfo.environment)
         proc.currentDirectoryURL = home
         proc.standardInput = stdin; proc.standardOutput = stdout; proc.standardError = FileHandle.nullDevice
@@ -90,7 +90,7 @@ public enum ClientFailure: Error, LocalizedError {
                 }
             }
         }
-        _ = try await send("initialize", params: ["clientInfo": ["name": "codex_account_manager", "title": "Codex Accounts Beta", "version": "1.0.0"], "capabilities": ["experimentalApi": true]], timeout: 20)
+        _ = try await send("initialize", params: ["clientInfo": ["name": "codex_account_manager", "title": "Codex 账号管家", "version": "1.0.0"], "capabilities": ["experimentalApi": true]], timeout: 20)
         try write(["method": "initialized", "params": [:]])
     }
     public func request(_ method: String, params: [String: Any] = [:], timeout: Double = 35) async throws -> [String: Any] {

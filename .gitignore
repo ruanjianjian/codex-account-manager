@@ -26,3 +26,6 @@ gateway/pool.json
 local.key
 config.before-gateway
 config.gateway-applied
+
+requests.jsonl*
+session-accounts.json*

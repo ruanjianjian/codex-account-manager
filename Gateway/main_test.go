@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"github.com/klauspost/compress/zstd"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -148,5 +150,77 @@ func TestExpiredAndPreferred(t *testing.T) {
 	xs, _ = g.candidates(c, "", false)
 	if len(xs) != 0 {
 		t.Fatal("expired token used")
+	}
+}
+
+func TestNativeLegacyHistoryAndFastTier(t *testing.T) {
+	seen := ""
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("chatgpt-account-id")
+		b, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(b), `"service_tier":"priority"`) || !strings.Contains(string(b), `"encrypted_content":"sealed"`) {
+			t.Error("request state or speed tier changed")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	}))
+	defer up.Close()
+	g := newGateway(func() (config, error) { c := pool(); c.Accounts[1].Available = false; return c, nil }, up.URL, func(event) {})
+	r := httptest.NewRequest("POST", "http://127.0.0.1:18455/backend-api/codex/responses", strings.NewReader(`{"service_tier":"priority","input":[{"encrypted_content":"sealed"}]}`))
+	r.Header.Set("Authorization", "Bearer token-two")
+	r.Header.Set("chatgpt-account-id", "acct-two")
+	r.Header.Set("session-id", "legacy")
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 200 || seen != "acct-two" {
+		t.Fatalf("legacy history routed incorrectly: %d %s", w.Code, seen)
+	}
+	r = httptest.NewRequest("POST", "http://127.0.0.1:18455/backend-api/codex/responses", strings.NewReader(`{}`))
+	r.Header.Set("Authorization", "Bearer token-two")
+	r.Header.Set("chatgpt-account-id", "acct-one")
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 401 {
+		t.Fatal("mismatched account accepted")
+	}
+}
+
+func TestNativeWebsocketFallsBackAndZstdRequest(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(b), `"service_tier":"priority"`) {
+			t.Error("tier missing")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	}))
+	defer up.Close()
+	g := newGateway(func() (config, error) { return pool(), nil }, up.URL, func(event) {})
+	r := httptest.NewRequest("GET", "http://127.0.0.1:18455/backend-api/codex/responses", nil)
+	r.Header.Set("Authorization", "Bearer token-two")
+	r.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 426 {
+		t.Fatal(w.Code)
+	}
+	enc, _ := zstd.NewWriter(nil)
+	defer enc.Close()
+	data := enc.EncodeAll([]byte(`{"input":"hello","service_tier":"priority"}`), nil)
+	r = httptest.NewRequest("POST", "http://127.0.0.1:18455/backend-api/codex/responses", bytes.NewReader(data))
+	r.Header.Set("Authorization", "Bearer token-two")
+	r.Header.Set("Content-Encoding", "zstd")
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest("POST", "http://127.0.0.1:18455/backend-api/codex/responses", strings.NewReader("broken"))
+	r.Header.Set("Authorization", "Bearer token-two")
+	r.Header.Set("Content-Encoding", "zstd")
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code == 200 {
+		t.Fatal("invalid zstd accepted")
 	}
 }

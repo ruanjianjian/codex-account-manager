@@ -16,6 +16,7 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "$APP_DIR/Conte
 cp "$BIN_DIR/CodexAccounts" "$APP_DIR/Contents/MacOS/CodexAccounts"
 strip -S "$APP_DIR/Contents/MacOS/CodexAccounts"
 cp .build/gateway/AccountsGateway "$APP_DIR/Contents/Helpers/AccountsGateway"
+cp Gateway/THIRD-PARTY-NOTICES.txt "$APP_DIR/Contents/Resources/THIRD-PARTY-NOTICES.txt"
 cp Gateway/README.md "$APP_DIR/Contents/Resources/Gateway-NOTICE.md"
 cp LICENSE "$APP_DIR/Contents/Resources/LICENSE"
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
@@ -27,8 +28,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Codex Accounts Beta</string>
 <key>CFBundleExecutable</key><string>CodexAccounts</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.3.0</string>
-<key>CFBundleVersion</key><string>3</string>
+<key>CFBundleShortVersionString</key><string>0.3.1</string>
+<key>CFBundleVersion</key><string>4</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSMultipleInstancesProhibited</key><true/>
 <key>NSHighResolutionCapable</key><true/>

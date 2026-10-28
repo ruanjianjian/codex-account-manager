@@ -5,17 +5,20 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/klauspost/compress/zstd"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,6 +43,8 @@ type config struct {
 	Accounts  []account `json:"accounts"`
 }
 type event struct {
+	Session string `json:"session,omitempty"`
+	Time    string `json:"time,omitempty"`
 	Kind    string `json:"kind"`
 	Account string `json:"account,omitempty"`
 	Status  int    `json:"status,omitempty"`
@@ -51,13 +56,14 @@ type binding struct {
 	Until time.Time
 }
 type gateway struct {
-	config func() (config, error)
-	base   string
-	client *http.Client
-	emit   func(event)
-	mu     sync.Mutex
-	sticky map[string]binding
-	rest   map[string]time.Time
+	config     func() (config, error)
+	base       string
+	client     *http.Client
+	emit       func(event)
+	mu         sync.Mutex
+	stickyFile string
+	sticky     map[string]binding
+	rest       map[string]time.Time
 }
 
 func newGateway(read func() (config, error), base string, emit func(event)) *gateway {
@@ -108,7 +114,17 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if subtle.ConstantTimeCompare([]byte(key), []byte(c.Key)) != 1 {
+	nativeAccount := ""
+	for _, a := range c.Accounts {
+		if a.Expires > float64(time.Now().Unix()) && len(a.Access) > 0 && subtle.ConstantTimeCompare([]byte(key), []byte(a.Access)) == 1 {
+			if id := r.Header.Get("chatgpt-account-id"); id != "" && id != a.AccountID {
+				continue
+			}
+			nativeAccount = a.ID
+			break
+		}
+	}
+	if nativeAccount == "" && subtle.ConstantTimeCompare([]byte(key), []byte(c.Key)) != 1 {
 		fail(w, 401, "Invalid local gateway key.")
 		return
 	}
@@ -118,6 +134,10 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/backend-api/codex"), "/v1")
+	if path == "/responses" && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		fail(w, http.StatusUpgradeRequired, "Use HTTP Responses streaming.")
+		return
+	}
 	if r.Method == "GET" && path == "/models" {
 		g.models(w, r, c)
 		return
@@ -126,7 +146,35 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "Unsupported gateway route.")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
+	compressed := http.MaxBytesReader(w, r.Body, 32<<20)
+	var reader io.Reader = compressed
+	switch strings.ToLower(r.Header.Get("Content-Encoding")) {
+	case "", "identity":
+	case "zstd":
+		decoder, e := zstd.NewReader(compressed, zstd.WithDecoderMaxMemory(64<<20), zstd.WithDecoderConcurrency(1))
+		if e != nil {
+			fail(w, 400, "Invalid compressed request.")
+			return
+		}
+		defer decoder.Close()
+		reader = decoder
+	case "gzip":
+		decoder, e := gzip.NewReader(compressed)
+		if e != nil {
+			fail(w, 400, "Invalid compressed request.")
+			return
+		}
+		defer decoder.Close()
+		reader = decoder
+	default:
+		fail(w, 415, "Unsupported request encoding.")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, (32<<20)+1))
+	if len(body) > 32<<20 {
+		fail(w, 413, "Decoded request too large.")
+		return
+	}
 	if err != nil {
 		fail(w, 413, "Request too large.")
 		return
@@ -156,6 +204,14 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Account-bound server state must never be silently stripped to enable fallback.
 	bound := bytes.Contains(body, []byte(`"encrypted_content"`)) || bytes.Contains(body, []byte(`"encrypted_function_args"`)) || len(obj["previous_response_id"]) > 0 || path == "/responses/compact"
+	// Native old threads supply their original logged-in account. Keep sealed state there.
+	if bound && nativeAccount != "" && session != "" {
+		g.mu.Lock()
+		if old := g.sticky[session]; old.ID == "" || old.Until.Before(time.Now()) {
+			g.sticky[session] = binding{ID: nativeAccount, Until: time.Now().Add(24 * time.Hour)}
+		}
+		g.mu.Unlock()
+	}
 	candidates, stuck := g.candidates(c, session, bound)
 	if stuck {
 		fail(w, 409, "This conversation contains account-bound state. Keep its account or start a new conversation to use another account.")
@@ -174,7 +230,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 502, "Cannot create upstream request.")
 			return
 		}
-		g.emit(event{Kind: "routing", Account: a.ID})
+		g.emit(event{Kind: "routing", Account: a.ID, Session: session})
 		res, err := g.client.Do(req)
 		if err != nil {
 			if r.Context().Err() != nil {
@@ -187,7 +243,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body.Close()
-			g.emit(event{Kind: "refused", Account: a.ID, Status: res.StatusCode})
+			g.emit(event{Kind: "refused", Account: a.ID, Status: res.StatusCode, Session: session})
 			if retryable(res.StatusCode) {
 				g.cool(a.ID, retryAt(res.Header, b))
 				continue
@@ -207,7 +263,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(res.StatusCode)
 			w.Write(b)
 			g.remember(session, a.ID)
-			g.emit(event{Kind: "completed", Account: a.ID})
+			g.emit(event{Kind: "completed", Account: a.ID, Session: session})
 			return
 		}
 		committed, retry := g.stream(w, r, res, a, session)
@@ -262,7 +318,7 @@ func (g *gateway) candidates(c config, session string, bound bool) ([]account, b
 		if c.Preferred != "" && a.ID != c.Preferred {
 			continue
 		}
-		if a.Access == "" || a.Expires <= float64(now.Unix()+30) || !a.Available || g.rest[a.ID].After(now) {
+		if a.Access == "" || a.Expires <= float64(now.Unix()+30) || (!a.Available && !(bound && old.ID == a.ID)) || g.rest[a.ID].After(now) {
 			continue
 		}
 		if bound && old.ID != "" && old.ID != a.ID {
@@ -298,7 +354,15 @@ func (g *gateway) remember(session, id string) {
 			}
 		}
 	}
-	g.sticky[session] = binding{ID: id, Until: time.Now().Add(24 * time.Hour)}
+	g.sticky[session] = binding{ID: id, Until: time.Now().Add(365 * 24 * time.Hour)}
+	if g.stickyFile != "" {
+		if data, err := json.Marshal(g.sticky); err == nil {
+			temp := g.stickyFile + ".tmp"
+			if os.WriteFile(temp, data, 0600) == nil {
+				os.Rename(temp, g.stickyFile)
+			}
+		}
+	}
 }
 func (g *gateway) cool(id string, until time.Time) {
 	g.mu.Lock()
@@ -437,8 +501,36 @@ func main() {
 		os.Exit(1)
 	}
 	var output sync.Mutex
-	emit := func(e event) { output.Lock(); defer output.Unlock(); json.NewEncoder(os.Stdout).Encode(e) }
+	emit := func(e event) {
+		output.Lock()
+		defer output.Unlock()
+		e.Time = time.Now().UTC().Format(time.RFC3339)
+		json.NewEncoder(os.Stdout).Encode(e)
+		// Bounded private diagnostics: no tokens, prompts, response bodies or tool arguments.
+		p := filepath.Join(filepath.Dir(*path), "requests.jsonl")
+		if st, err := os.Lstat(p); err == nil {
+			if !st.Mode().IsRegular() {
+				return
+			}
+			if st.Size() > 2<<20 {
+				os.Rename(p, p+".previous")
+			}
+		}
+		if f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+			json.NewEncoder(f).Encode(e)
+			f.Close()
+		}
+	}
 	g := newGateway(func() (config, error) { return readConfig(*path) }, upstream, emit)
+	g.stickyFile = filepath.Join(filepath.Dir(*path), "session-accounts.json")
+	if st, err := os.Lstat(g.stickyFile); err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0077 == 0 && st.Size() < 1<<20 {
+		if data, err := os.ReadFile(g.stickyFile); err == nil {
+			var saved map[string]binding
+			if json.Unmarshal(data, &saved) == nil && saved != nil {
+				g.sticky = saved
+			}
+		}
+	}
 	ln, e := net.Listen("tcp", *addr)
 	if e != nil {
 		fmt.Fprintln(os.Stderr, "gateway port is already occupied")

@@ -166,7 +166,7 @@ enum SlotStatus: Equatable {
             case "ready":
                 do {
                     try self.gateway.install(); self.gatewayReady = true
-                    self.gatewayCaption = "网关就绪 · 重启 Codex 后在新会话使用"
+                    self.gatewayCaption = "网关就绪 · 支持新旧会话，升级后重启 Codex"
                 } catch { self.gatewayReady = false; self.gatewayCaption = error.localizedDescription }
             case "routing":
                 self.gatewayAccount = id
@@ -203,7 +203,7 @@ enum SlotStatus: Equatable {
         guard !preview, persistenceEnabled else { return }
         if enabled && confirm && !gatewayEnabled {
             let alert = NSAlert(); alert.messageText = "启用自动账号路由？"
-            alert.informativeText = "推理请求将通过本机网关选择账号，登录文件保持原样。首次启用后需重启 Codex 并新建会话；API provider 模式可能影响云端会话和远程控制。旧会话含加密状态时请继续原账号，或关闭路由。"
+            alert.informativeText = "保留官方连接方式与 Fast 设置，通过本机网关转发新旧会话。启用后重启 Codex，原会话可以继续使用。加密历史固定到原账号，原账号额度不足时会提示，不强行跨账号重放。"
             alert.addButton(withTitle: "启用自动路由"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }

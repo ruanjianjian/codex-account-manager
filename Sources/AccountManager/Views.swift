@@ -112,7 +112,7 @@ struct GeneralSettings: View {
                     }
                     if !store.gatewayReady { Button("重试启动网关") { store.setGatewayEnabled(true, confirm: false) } }
                 }
-                Text("本机网关按会话选择账号，额度不足时尝试备用账号。首次启用或关闭后需重启 Codex，新建会话使用；已输出内容或绑定账号的加密历史不会自动重放。使用期间请保持管家运行。")
+                Text("保留官方连接方式与 Fast 设置；重启 Codex 后，新旧会话都可通过网关。新请求自动选择账号；加密历史保持原账号，原账号不可用时提示，不重放工具。使用期间保持管家运行。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 7) {
