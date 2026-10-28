@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -38,11 +39,13 @@ type account struct {
 	Reset     float64 `json:"reset"`
 }
 type config struct {
-	Key       string    `json:"key"`
-	Preferred string    `json:"preferred"`
-	Accounts  []account `json:"accounts"`
+	Key       string           `json:"key"`
+	Preferred string           `json:"preferred"`
+	Accounts  []account        `json:"accounts"`
+	Clients   []clientIdentity `json:"clients,omitempty"`
 }
 type event struct {
+	Request string `json:"request,omitempty"`
 	Session string `json:"session,omitempty"`
 	Time    string `json:"time,omitempty"`
 	Kind    string `json:"kind"`
@@ -56,6 +59,7 @@ type binding struct {
 	Until time.Time
 }
 type gateway struct {
+	native     *nativeAuth
 	config     func() (config, error)
 	base       string
 	client     *http.Client
@@ -70,6 +74,19 @@ func newGateway(read func() (config, error), base string, emit func(event)) *gat
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 90 * time.Second
 	return &gateway{config: read, base: base, client: &http.Client{Transport: tr, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, emit: emit, sticky: map[string]binding{}, rest: map[string]time.Time{}}
+}
+
+type requestTraceKey struct{}
+type requestTrace struct{ id, session string }
+
+var requestSequence atomic.Uint64
+
+func (g *gateway) emitRequest(r *http.Request, e event) {
+	if trace, ok := r.Context().Value(requestTraceKey{}).(requestTrace); ok {
+		e.Request = trace.id
+		e.Session = trace.session
+	}
+	g.emit(e)
 }
 func readConfig(path string) (config, error) {
 	var c config
@@ -113,8 +130,22 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, "Local non-browser clients only.")
 		return
 	}
-	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	authorization := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, "Bearer ") || len(authorization) <= 7 {
+		fail(w, 401, "Invalid local gateway key.")
+		return
+	}
+	key := strings.TrimPrefix(authorization, "Bearer ")
 	nativeAccount := ""
+	if g.native != nil {
+		var authErr error
+		c, nativeAccount, authErr = g.native.authenticate(c, key, r.Header.Get("chatgpt-account-id"))
+		if authErr != nil {
+			g.emit(event{Kind: "local_auth_unavailable", Status: 503})
+			fail(w, 503, "Local credential registry unavailable; check account manager diagnostics.")
+			return
+		}
+	}
 	for _, a := range c.Accounts {
 		if a.Expires > float64(time.Now().Unix()) && len(a.Access) > 0 && subtle.ConstantTimeCompare([]byte(key), []byte(a.Access)) == 1 {
 			if id := r.Header.Get("chatgpt-account-id"); id != "" && id != a.AccountID {
@@ -125,6 +156,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if nativeAccount == "" && subtle.ConstantTimeCompare([]byte(key), []byte(c.Key)) != 1 {
+		g.emit(event{Kind: "local_auth_rejected", Status: 401})
 		fail(w, 401, "Invalid local gateway key.")
 		return
 	}
@@ -202,6 +234,10 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if session == "" {
 		session = r.Header.Get("x-codex-session-id")
 	}
+	r = r.WithContext(context.WithValue(r.Context(), requestTraceKey{}, requestTrace{
+		id: fmt.Sprintf("%d-%d", time.Now().UnixNano(), requestSequence.Add(1)), session: session,
+	}))
+	defer func() { g.emitRequest(r, event{Kind: "finished"}) }()
 	// Account-bound server state must never be silently stripped to enable fallback.
 	bound := bytes.Contains(body, []byte(`"encrypted_content"`)) || bytes.Contains(body, []byte(`"encrypted_function_args"`)) || len(obj["previous_response_id"]) > 0 || path == "/responses/compact"
 	// Native old threads supply their original logged-in account. Keep sealed state there.
@@ -230,20 +266,20 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 502, "Cannot create upstream request.")
 			return
 		}
-		g.emit(event{Kind: "routing", Account: a.ID, Session: session})
+		g.emitRequest(r, event{Kind: "routing", Account: a.ID, Session: session})
 		res, err := g.client.Do(req)
 		if err != nil {
 			if r.Context().Err() != nil {
 				return
 			}
-			g.emit(event{Kind: "network_error", Account: a.ID})
+			g.emitRequest(r, event{Kind: "network_error", Account: a.ID})
 			g.cool(a.ID, time.Now().Add(15*time.Second))
 			continue
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body.Close()
-			g.emit(event{Kind: "refused", Account: a.ID, Status: res.StatusCode, Session: session})
+			g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: res.StatusCode, Session: session})
 			if retryable(res.StatusCode) {
 				g.cool(a.ID, retryAt(res.Header, b))
 				continue
@@ -263,7 +299,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(res.StatusCode)
 			w.Write(b)
 			g.remember(session, a.ID)
-			g.emit(event{Kind: "completed", Account: a.ID, Session: session})
+			g.emitRequest(r, event{Kind: "completed", Account: a.ID, Session: session})
 			return
 		}
 		committed, retry := g.stream(w, r, res, a, session)
@@ -444,13 +480,13 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Respo
 					content = strings.Contains(v.Type, "delta") || strings.Contains(v.Type, "output_item") || v.Type == "response.completed"
 					if v.Type == "response.completed" {
 						completed = true
-						g.emit(event{Kind: "completed", Account: a.ID, Input: v.Response.Usage.Input, Output: v.Response.Usage.Output})
+						g.emitRequest(r, event{Kind: "completed", Account: a.ID, Input: v.Response.Usage.Input, Output: v.Response.Usage.Output})
 					}
 				}
 			}
 			if failed && !committed {
 				g.cool(a.ID, time.Now().Add(time.Minute))
-				g.emit(event{Kind: "refused", Account: a.ID, Status: 502})
+				g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: 502})
 				return false, true
 			}
 			if !committed {
@@ -480,7 +516,7 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Respo
 		}
 		if err != nil {
 			if committed && !completed && r.Context().Err() == nil {
-				g.emit(event{Kind: "interrupted", Account: a.ID})
+				g.emitRequest(r, event{Kind: "interrupted", Account: a.ID})
 				io.WriteString(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"Upstream stream interrupted; not replayed to avoid duplicate tool execution.\"}}\n\n")
 			}
 			return committed, !committed
@@ -490,6 +526,7 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Respo
 func main() {
 	path := flag.String("config", "", "private pool configuration")
 	addr := flag.String("listen", "127.0.0.1:18455", "loopback listener")
+	desktopAuth := flag.String("desktop-auth", "", "trusted local desktop auth file (never a request parameter)")
 	flag.Parse()
 	host, _, e := net.SplitHostPort(*addr)
 	if e != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
@@ -522,6 +559,20 @@ func main() {
 		}
 	}
 	g := newGateway(func() (config, error) { return readConfig(*path) }, upstream, emit)
+	if *desktopAuth != "" {
+		g.native = &nativeAuth{path: *desktopAuth, cache: filepath.Join(filepath.Dir(*path), "client-auth-hashes.json")}
+		c, err := readConfig(*path)
+		if err == nil {
+			err = g.native.validateDesktop(c)
+		}
+		if err == nil {
+			_, _, err = g.native.authenticate(c, "", "")
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "local credential registry unavailable")
+			os.Exit(1)
+		}
+	}
 	g.stickyFile = filepath.Join(filepath.Dir(*path), "session-accounts.json")
 	if st, err := os.Lstat(g.stickyFile); err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0077 == 0 && st.Size() < 1<<20 {
 		if data, err := os.ReadFile(g.stickyFile); err == nil {

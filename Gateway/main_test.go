@@ -224,3 +224,34 @@ func TestNativeWebsocketFallsBackAndZstdRequest(t *testing.T) {
 		t.Fatal("invalid zstd accepted")
 	}
 }
+
+func TestActivityTraceCoversRetryAndTermination(t *testing.T) {
+	var events []event
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("chatgpt-account-id") == "acct-one" {
+			w.WriteHeader(429)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	}))
+	defer up.Close()
+	g := newGateway(func() (config, error) { return pool(), nil }, up.URL, func(e event) { events = append(events, e) })
+	ask(g, `{"input":"hi"}`)
+	var kinds []string
+	for _, e := range events {
+		if e.Request == "" || e.Request != events[0].Request || e.Session != "test-session" {
+			t.Fatalf("missing correlation: %+v", e)
+		}
+		kinds = append(kinds, e.Kind)
+	}
+	if strings.Join(kinds, ",") != "routing,refused,routing,completed,finished" {
+		t.Fatal(kinds)
+	}
+	first := events[0].Request
+	events = nil
+	ask(g, `{"input":"next"}`)
+	if events[0].Request == first || events[len(events)-1].Kind != "finished" {
+		t.Fatal("request identity reused or not closed")
+	}
+}

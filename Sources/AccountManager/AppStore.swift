@@ -33,6 +33,7 @@ enum SlotStatus: Equatable {
     @Published var migratingCredentials = false
     @Published var gatewayEnabled = UserDefaults.standard.bool(forKey: "gateway.enabled")
     @Published var gatewayReady = false
+    @Published var routingActivity = RoutingActivity()
     @Published var gatewayCaption = "自动路由未开启"
     @Published var gatewayAccount: String?
     @Published var gatewayPreferred = UserDefaults.standard.string(forKey: "gateway.preferred") ?? ""
@@ -160,10 +161,13 @@ enum SlotStatus: Equatable {
         Task { await refreshSequentially() }
     }
     private func setupGateway() {
-        gateway.onEvent = { [weak self] kind, id, code in
+        gateway.onEvent = { [weak self] event in
             guard let self else { return }
+            self.routingActivity.receive(event)
+            let kind = event.kind, id = event.account, code = event.status
             switch kind {
             case "ready":
+                guard self.gatewayEnabled, self.gateway.running else { return }
                 do {
                     try self.gateway.install(); self.gatewayReady = true
                     self.gatewayCaption = "网关就绪 · 支持新旧会话，升级后重启 Codex"
@@ -177,6 +181,8 @@ enum SlotStatus: Equatable {
                 if let id, code == 401 { self.refresh(id) }
             case "interrupted": self.gatewayCaption = "回复中断，未重复执行；请在 Codex 中重试"
             case "stopped": self.gatewayReady = false; self.gatewayCaption = "网关已停止 · 在设置中重试或关闭自动路由"
+            case "local_auth_rejected": self.gatewayCaption = "桌面认证不匹配；请确认当前登录账号已连接到管家"
+            case "local_auth_unavailable": self.gatewayCaption = "本机认证记录不可用；保留现场并检查私有文件权限"
             default: break
             }
         }
@@ -184,20 +190,26 @@ enum SlotStatus: Equatable {
     }
     private func updateGatewayPool() throws {
         guard usesFileCredentials else { throw GatewayConfigurationError.credentials }
+        let desktopURL = sharedDesktop.home.appendingPathComponent("auth.json")
+        let desktopData = desktopURL.standardizedFileURL == desktopURL.resolvingSymlinksInPath() ? try? Data(contentsOf: desktopURL) : nil
+        let identities = saved.accounts.compactMap { slot in slot.expectedAccountID.map { GatewayClientIdentity(id: slot.id, accountID: $0) } }
+        guard let desktopData, let desktop = try? DesktopCredential(desktopData),
+              identities.contains(where: { $0.accountID == desktop.accountID }),
+              let desktopValue = try? GatewayAccount(id: "desktop", credential: desktop, available: true, reset: 0),
+              desktopValue.expires > Date().timeIntervalSince1970 else { throw GatewayConfigurationError.desktopIdentity }
         var accounts: [GatewayAccount] = []
         for slot in saved.accounts {
             guard let expected = slot.expectedAccountID else { continue }
             if collectorRetry.paused.contains(slot.id) { continue }
             if case .wrongAccount = status[slot.id] { continue }
-            let home = sharedDesktop.selection?.slotID == slot.id ? sharedDesktop.home : root.appendingPathComponent("accounts/\(slot.id)")
-            let auth = home.appendingPathComponent("auth.json")
+            let auth = root.appendingPathComponent("accounts/\(slot.id)/auth.json")
             guard auth.standardizedFileURL == auth.resolvingSymlinksInPath(),
-                  let data = try? Data(contentsOf: auth), let credential = try? DesktopCredential(data, expected: expected) else { continue }
+                  let credential = try? GatewayCredentialSource.select(expected: expected, desktop: desktopData, stored: { try Data(contentsOf: auth) }) else { continue }
             let windows = slot.snapshot?.rates.windows ?? []
             let spent = windows.contains { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
             if let value = try? GatewayAccount(id: slot.id, credential: credential, available: !spent, reset: windows.compactMap(\.resetsAt).min() ?? 0) { accounts.append(value) }
         }
-        try gateway.save(accounts: accounts, preferred: gatewayPreferred)
+        try gateway.save(accounts: accounts, preferred: gatewayPreferred, clients: identities)
     }
     func setGatewayEnabled(_ enabled: Bool, confirm: Bool = true) {
         guard !preview, persistenceEnabled else { return }
@@ -212,7 +224,7 @@ enum SlotStatus: Equatable {
                 guard loginSlotID == nil, launchingDesktop.isEmpty, !sharedDesktop.pending else { throw GatewayConfigurationError.unavailable }
                 try updateGatewayPool(); try gateway.start(); gatewayCaption = "正在启动本机网关…"
             } else {
-                try gateway.stop(restore: true); gatewayReady = false; gatewayAccount = nil
+                try gateway.stop(restore: true); routingActivity.receive(.init(kind: "stopped")); gatewayReady = false; gatewayAccount = nil
                 gatewayCaption = "已恢复原配置 · 重启 Codex 生效"
             }
             gatewayEnabled = enabled; UserDefaults.standard.set(enabled, forKey: "gateway.enabled")
@@ -956,6 +968,11 @@ enum SlotStatus: Equatable {
                let identity = try? JSONDecoder().decode(AccountIdentity.self, from: Data(#"{"type":"chatgpt","email":"demo@example.com","planType":"pro"}"#.utf8)) {
                 saved.accounts[i].snapshot = Snapshot(identity: identity, rates: rates); status[saved.accounts[i].id] = .connected
             }
+        }
+        if CommandLine.arguments.contains("--routing-preview") || Bundle.main.bundleIdentifier?.contains("routing-preview") == true {
+            gatewayEnabled = true; gatewayReady = true
+            routingActivity.receive(.init(kind: "routing", account: saved.accounts[0].id, request: "preview-a"))
+            routingActivity.receive(.init(kind: "routing", account: saved.accounts[2].id, request: "preview-b"))
         }
         saved.accounts[2].snapshot?.fetchedAt = Date().addingTimeInterval(-3600)
         status[saved.accounts[2].id] = .failure("网络暂时不可用；显示的是上次同步数据。")

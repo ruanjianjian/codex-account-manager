@@ -82,14 +82,7 @@ struct DesktopWidgetView: View {
                 Button { present(.settings) } label: { Image(systemName: "slider.horizontal.3") }
                     .help("设置").accessibilityLabel("打开设置")
             }.buttonStyle(.plain).font(.system(size: 13))
-            if store.gatewayEnabled {
-                HStack {
-                    Image(systemName: store.gatewayReady ? "arrow.triangle.branch" : "exclamationmark.circle")
-                    Text(store.gatewayCaption).lineLimit(2)
-                    Spacer(minLength: 0)
-                    if !store.gatewayPreferred.isEmpty { Button("自动") { store.selectGatewayAccount("") }.buttonStyle(.plain) }
-                }.font(.system(size: 10, weight: .medium)).foregroundStyle(store.gatewayReady ? Color.secondary : Color.orange)
-            }
+            if store.gatewayEnabled { RoutingActivityView(store: store) }
             if let banner = store.banner {
                 HStack(alignment: .top) {
                     Text(banner).font(.caption).fixedSize(horizontal: false, vertical: true)

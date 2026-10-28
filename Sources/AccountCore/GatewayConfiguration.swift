@@ -1,12 +1,13 @@
 import Foundation
 
 public enum GatewayConfigurationError: LocalizedError {
-    case conflict, credentials, unavailable
+    case conflict, credentials, unavailable, desktopIdentity
     public var errorDescription: String? {
         switch self {
         case .conflict: return "Codex 配置已被其他程序修改，自动恢复已停止。备份仍保留在网关目录。"
         case .credentials: return "请先连接账号并启用本地文件存储，再启用自动路由。"
         case .unavailable: return "本机网关启动失败；请检查端口占用后重试。"
+        case .desktopIdentity: return "Codex 当前登录未匹配已连接账号，或桌面凭据已过期。请先将当前账号连接到管家；未修改 Codex 配置。"
         }
     }
 }
@@ -26,7 +27,9 @@ public struct GatewayConfiguration {
         guard path.standardizedFileURL == path.resolvingSymlinksInPath() else { throw GatewayConfigurationError.conflict }
         if installed {
             _ = try checkedCurrent()
-            if try parts(String(contentsOf: applied, encoding: .utf8)).base != nil { return }
+            let installedParts = try parts(String(contentsOf: applied, encoding: .utf8))
+            if installedParts.base == "openai_base_url = \"http://127.0.0.1:\(port)/backend-api/codex\"",
+               installedParts.block.contains("experimental_bearer_token = \"\(key)\"") { return }
             // First restore our old fields, preserving concurrent edits, then install native routing.
             try restore()
             try install(key: key, port: port)
@@ -139,5 +142,22 @@ public struct GatewayPool: Codable {
     public let key: String
     public let preferred: String
     public let accounts: [GatewayAccount]
-    public init(key: String, preferred: String, accounts: [GatewayAccount]) { self.key = key; self.preferred = preferred; self.accounts = accounts }
+    public let clients: [GatewayClientIdentity]
+    public init(key: String, preferred: String, accounts: [GatewayAccount], clients: [GatewayClientIdentity] = []) { self.key = key; self.preferred = preferred; self.accounts = accounts; self.clients = clients }
+}
+
+public struct GatewayClientIdentity: Codable {
+    public let id: String
+    public let accountID: String
+    public init(id: String, accountID: String) { self.id = id; self.accountID = accountID }
+}
+
+public enum GatewayCredentialSource {
+    /// The switch receipt is historical, not authoritative after a desktop login.
+    public static func select(expected: String, desktop: Data?, stored: () throws -> Data) throws -> DesktopCredential {
+        if let desktop, let credential = try? DesktopCredential(desktop, expected: expected),
+           let value = try? GatewayAccount(id: "desktop", credential: credential, available: true, reset: 0),
+           value.expires > Date().timeIntervalSince1970 { return credential }
+        return try DesktopCredential(stored(), expected: expected)
+    }
 }

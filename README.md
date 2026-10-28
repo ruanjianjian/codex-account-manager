@@ -1,5 +1,7 @@
 # Codex Accounts · Public Beta
 
+> **交接分支，尚未验收通过。** 2026-10-28 用户反馈本机 1.12.1 实际切换后仍完全不可用。此分支保存待排查源码，不代表可用修复，不提供新安装包。Claude 接手请先读 [HANDOFF.md](HANDOFF.md)。下文的发布版本介绍不代表本分支已通过验收。
+
 A local-first macOS menu-bar app for multiple Codex accounts. 原生 macOS 多账号额度组件。
 
 **测试版 v0.3.1-beta.1** · macOS 14+ · 首发下载包仅 Apple Silicon · MIT
@@ -123,3 +125,7 @@ DeepSeek 手动测试入口是实验功能，**目前未验证能成功抓取 X*
 供发布者将来选择使用的签名、公证与票据校验流程见 [NOTARIZATION.md](docs/NOTARIZATION.md)；它不是安装步骤。当前测试包仍以 Release 标注的签名状态为准。
 
 [MIT License](LICENSE)
+
+### 实时路由图
+
+开启自动路由后，组件顶部会显示 Codex → 本机网关 → 账号的实时流向。活动请求以光点和账号高亮展示，支持并发、完成和换路计数，点击标题可收起。无请求时停止动画；遵循 macOS 减少动态效果设置。统计只覆盖本次管家启动期间。展示结构参考 [Magpie](https://github.com/yetone/magpie)，使用 SwiftUI 独立实现。
