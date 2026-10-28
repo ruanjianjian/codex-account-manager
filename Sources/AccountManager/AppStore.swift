@@ -482,7 +482,7 @@ enum SlotStatus: Equatable {
     var personalXCaption: String {
         if let error = personalX.lastError { return error }
         if personalXTesting { return "正在测试个人 X 登录态…" }
-        guard let checked = personalX.lastCheckedAt else { return "等待首次登录与测试；当前仍使用第三方公告源。" }
+        guard let checked = personalX.lastCheckedAt else { return resetMonitor.enabled ? "等待首次登录与测试；当前使用第三方公告源。" : "尚未连接个人 X；公告监控已关闭。" }
         let status = personalX.enabled ? "已连接个人 X" : "个人 X 监控已关闭"
         return status + " · 读到 \(personalX.lastPosts.count) 条 · " + checked.formatted(date: .omitted, time: .shortened)
             + (personalX.possibleGap ? " · 中间可能有漏帖，请核对主页" : "")

@@ -106,8 +106,8 @@ struct DesktopWidgetView: View {
                 Text(store.preview ? "模拟数据" : "\(store.connectedCount)/\(store.saved.accounts.count) 已连接")
                 Spacer()
                 Text(store.isBusy ? "同步中" : "每分钟同步")
-                Button { store.setDesktopVisible(false) } label: { Text(store.shortcutLabel + " 隐藏") }
-                    .buttonStyle(.plain).help("隐藏后可用快捷键呼出")
+                Button { store.setDesktopVisible(false) } label: { Text(store.shortcutChoice == "none" ? "隐藏" : store.shortcutLabel + " 隐藏") }
+                    .buttonStyle(.plain).help(store.shortcutChoice == "none" ? "隐藏后可从菜单栏呼出" : "隐藏后可用快捷键呼出")
             }.font(.system(size: 10, weight: .medium)).frame(height: 16)
         }
         .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity)
