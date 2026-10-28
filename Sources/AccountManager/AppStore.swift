@@ -27,6 +27,11 @@ enum SlotStatus: Equatable {
     @Published var saved: SavedState
     @Published var status: [String: SlotStatus] = [:]
     @Published var loginSlotID: String?
+    @Published var launchingDesktop = Set<String>()
+    private let accountDesktop = AccountDesktopLauncher()
+    private lazy var sharedDesktop = SharedDesktopSwitcher(root: root)
+    @Published var migratingCredentials = false
+    var usesFileCredentials: Bool { sharedDesktop.fileStore.enabled }
     @Published var banner: String?
     @Published var now = Date()
     @Published var profiles: [ChromeProfile] = []
@@ -74,6 +79,25 @@ enum SlotStatus: Equatable {
     let root: URL
     let preview: Bool
     private var clients: [String: RPCClient] = [:]
+    private var collectorRetry = CollectorRetryPolicy()
+    private let collectorPauseKey = "collector.pausedAccounts"
+    private func persistCollectorPause() {
+        if !preview { UserDefaults.standard.set(Array(collectorRetry.paused).sorted(), forKey: collectorPauseKey) }
+    }
+    private func resumeCollector(_ id: String) {
+        collectorRetry.resume(id); persistCollectorPause()
+    }
+    private func pauseCollectorIfNeeded(_ error: Error, id: String) -> Bool {
+        if collectorRetry.paused.contains(id) { return true }
+        guard collectorRetry.record(error, account: id, usesKeyring: !usesFileCredentials && sharedDesktop.selection?.slotID != id) else { return false }
+        persistCollectorPause()
+        clients.removeValue(forKey: id)?.stop()
+        status[id] = .failure(CollectorRetryPolicy.message)
+        usageErrors[id] = CollectorRetryPolicy.message
+        banner = "\(slot(id)?.displayName ?? "账号")：\(CollectorRetryPolicy.message)"
+        onChange?()
+        return true
+    }
     private var nextPoll: [String: Date] = [:]
     private var failures: [String: Int] = [:]
     private var busy = Set<String>()
@@ -112,8 +136,12 @@ enum SlotStatus: Equatable {
         if shortcutChoice == "c" { shortcutChoice = "ctrl-semicolon"; UserDefaults.standard.set(shortcutChoice, forKey: "desktop.shortcut") }
         profiles = Self.readChromeProfiles()
         loginAtLaunch = SMAppService.mainApp.status == .enabled
-        for slot in saved.accounts { status[slot.id] = .disconnected }
+        if !preview { collectorRetry = CollectorRetryPolicy(paused: Set(UserDefaults.standard.stringArray(forKey: collectorPauseKey) ?? [])) }
+        for slot in saved.accounts {
+            status[slot.id] = collectorRetry.paused.contains(slot.id) ? .failure(CollectorRetryPolicy.message) : .disconnected
+        }
         if preview { loadPreview(); return }
+        if sharedDesktop.pending { banner = "上次切换未完成，已暂停采集。请退出 Codex 后点账号名称恢复登录。" }
         loadResetMonitor()
         loadPersonalX()
         checkResetAnnouncements()
@@ -142,15 +170,31 @@ enum SlotStatus: Equatable {
         let paths = [
             "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
             "/Applications/Codex.app/Contents/Resources/codex",
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
             "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
             "/opt/homebrew/bin/codex", "/usr/local/bin/codex"
         ]
         guard let path = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { throw ClientFailure.missingBinary }
         return URL(fileURLWithPath: path)
     }
+    private func verifySharedIdentity(_ id: String) throws {
+        guard sharedDesktop.selection?.slotID == id else { return }
+        guard let expected = slot(id)?.expectedAccountID,
+              sharedDesktop.selection?.accountID == expected else { throw ClientFailure.authentication }
+        _ = try DesktopCredential(Data(contentsOf: sharedDesktop.home.appendingPathComponent("auth.json")), expected: expected)
+    }
     private func client(_ id: String) throws -> RPCClient {
+        try verifySharedIdentity(id)
         if let client = clients[id] { return client }
-        let client = RPCClient(home: root.appendingPathComponent("accounts/\(id)"), executable: try Self.binary())
+        let client: RPCClient
+        if sharedDesktop.selection?.slotID == id {
+            let plan = try SharedDesktopPlan(home: sharedDesktop.home)
+            let config = sharedDesktop.home.appendingPathComponent("config.toml")
+            try plan.validateConfiguration(FileManager.default.fileExists(atPath: config.path) ? try String(contentsOf: config, encoding: .utf8) : "")
+            client = RPCClient(home: sharedDesktop.home, executable: try Self.binary(), prepareHome: false, credentialStore: "file")
+        } else {
+            client = RPCClient(home: root.appendingPathComponent("accounts/\(id)"), executable: try Self.binary(), credentialStore: usesFileCredentials ? "file" : "keyring")
+        }
         client.onNotification = { [weak self] method, params in self?.handleNotification(id, method, params) }
         clients[id] = client
         return client
@@ -165,17 +209,19 @@ enum SlotStatus: Equatable {
         }
     }
     private func syncUsage(_ id: String, force: Bool = false) async {
-        guard !preview, persistenceEnabled, index(id) != nil, loginSlotID != id, !usageLoading.contains(id) else { return }
+        guard launchingDesktop.isEmpty, !sharedDesktop.pending, !preview, persistenceEnabled, index(id) != nil, loginSlotID != id, !usageLoading.contains(id), !collectorRetry.paused.contains(id) else { return }
         if !force, let next = nextUsagePoll[id], next > Date() { return }
         usageLoading.insert(id); defer { usageLoading.remove(id) }
         nextUsagePoll[id] = Date().addingTimeInterval(300)
         do {
             let response = try decode(TokenUsageResponse.self, await client(id).request("account/usage/read"))
-            guard let i = index(id), loginSlotID != id else { return }
+            try verifySharedIdentity(id)
+            guard let i = index(id), loginSlotID != id, !collectorRetry.paused.contains(id) else { return }
             saved.accounts[i].tokenUsage = TokenUsageSnapshot(response: response)
             usageErrors.removeValue(forKey: id); persist()
         } catch {
             guard index(id) != nil else { return }
+            if pauseCollectorIfNeeded(error, id: id) { return }
             usageErrors[id] = safeError(error)
         }
     }
@@ -196,12 +242,17 @@ enum SlotStatus: Equatable {
         if stale { return "缓存统计 · 待更新" }
         return available == accounts.count ? "\(available) 个账号 · 服务端统计" : "\(available)/\(accounts.count) 个账号已返回"
     }
-    func refresh(_ id: String) { Task { await sync(id, force: true) } }
+    func refresh(_ id: String) {
+        guard launchingDesktop.isEmpty, loginSlotID != id, !busy.contains(id), !usageLoading.contains(id) else { return }
+        resumeCollector(id)
+        Task { await sync(id, force: true) }
+    }
     private func refreshSequentially(force: Bool = false) async {
         for slot in saved.accounts { await sync(slot.id, force: force) }
     }
     private func sync(_ id: String, force: Bool = false) async {
-        guard persistenceEnabled, !preview, !busy.contains(id), loginSlotID != id, index(id) != nil else { return }
+        guard launchingDesktop.isEmpty, !sharedDesktop.pending, persistenceEnabled, !preview, !busy.contains(id), loginSlotID != id, index(id) != nil else { return }
+        guard !collectorRetry.paused.contains(id) else { return }
         if case .wrongAccount = status[id] { return }
         if !force, let next = nextPoll[id], next > Date() { return }
         let syncStartedAt = Date()
@@ -210,14 +261,19 @@ enum SlotStatus: Equatable {
         do {
             let client = try client(id)
             let identityResult = try decode(AccountRead.self, await client.request("account/read", params: ["refreshToken": false]))
-            guard let i = index(id) else { return }
+            // Finish the current request, but do not begin another network call during a switch.
+            guard launchingDesktop.isEmpty else {
+                status[id] = slot(id)?.snapshot == nil ? .disconnected : .connected
+                return
+            }
+            guard let i = index(id), !collectorRetry.paused.contains(id) else { return }
             guard let identity = identityResult.account, identity.type == "chatgpt" else {
                 status[id] = saved.accounts[i].expectedEmail == nil ? .disconnected : .needsAuth
                 nextPoll[id] = .distantFuture
                 client.stop(); return
             }
             let rates = try decode(RateResponse.self, await client.request("account/rateLimits/read"))
-            guard let i = index(id) else { return }
+            guard let i = index(id), !collectorRetry.paused.contains(id) else { return }
             let check = IdentityCheck.evaluate(slot: saved.accounts[i], identity: identity, accountID: rates.accountId, others: saved.accounts)
             switch check {
             case .valid: break
@@ -245,6 +301,7 @@ enum SlotStatus: Equatable {
             saveResetMonitor()
             persist()
         } catch {
+            if pauseCollectorIfNeeded(error, id: id) { return }
             let isAuth: Bool = { if case ClientFailure.authentication = error { return true }; return false }()
             status[id] = isAuth ? .needsAuth : .failure(safeError(error))
             let count = min((failures[id] ?? 0) + 1, 4); failures[id] = count
@@ -277,7 +334,7 @@ enum SlotStatus: Equatable {
     }
     func connect(_ id: String) { loginQueue.removeAll(); Task { await beginLogin(id) } }
     func canOpenConnection(_ id: String) -> Bool {
-        guard canConnect, index(id) != nil else { return false }
+        guard launchingDesktop.isEmpty, !sharedDesktop.pending, canConnect, index(id) != nil else { return false }
         if loginSlotID == id { return loginURL != nil }
         return loginSlotID == nil && !busy.contains(id)
     }
@@ -291,7 +348,11 @@ enum SlotStatus: Equatable {
         if loginSlotID == id { reopenLogin() } else { connect(id) }
     }
     private func beginLogin(_ id: String) async {
+        guard launchingDesktop.isEmpty, !sharedDesktop.pending, sharedDesktop.selection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
+            banner = "此账号正在用于桌面端。请先切换到其他账号并退出旧独立窗口，再重新授权。"; return
+        }
         guard loginSlotID == nil, canConnect, !busy.contains(id), !usageLoading.contains(id), index(id) != nil else { return }
+        resumeCollector(id)
         loginSlotID = id; loginStarted = Date(); status[id] = .waiting
         let generation = UUID(); loginGeneration = generation
         do {
@@ -308,6 +369,7 @@ enum SlotStatus: Equatable {
             // Stop the isolated process to close any callback whose ID was not returned.
             clients[id]?.stop(); clearLogin()
             status[id] = .failure(safeError(error)); loginQueue.removeAll()
+            _ = pauseCollectorIfNeeded(error, id: id)
         }
     }
     func reopenLogin() {
@@ -353,7 +415,7 @@ enum SlotStatus: Equatable {
         persist(); onChange?()
     }
     func addAccount(profile: String, alias: String) {
-        guard canConnect, loginSlotID == nil, profiles.contains(where: { $0.id == profile }) else { return }
+        guard launchingDesktop.isEmpty, !sharedDesktop.pending, canConnect, loginSlotID == nil, profiles.contains(where: { $0.id == profile }) else { return }
         let id = "account-" + UUID().uuidString.lowercased()
         let clean = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         var slot = AccountSlot(id: id, name: "新账号", chromeProfile: profile)
@@ -362,6 +424,9 @@ enum SlotStatus: Equatable {
         connect(id)
     }
     func disconnect(_ id: String) async {
+        guard launchingDesktop.isEmpty, !sharedDesktop.pending, sharedDesktop.selection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
+            banner = "此账号正在用于桌面端。请先切换到其他账号并退出旧独立窗口，再移除连接。"; return
+        }
         guard canConnect, index(id) != nil, !busy.contains(id), !usageLoading.contains(id), loginSlotID == nil else { return }
         busy.insert(id); defer { busy.remove(id) }
         do {
@@ -371,6 +436,7 @@ enum SlotStatus: Equatable {
             guard let i = index(id) else { return }
             let slot = saved.accounts[i]
             saved.accounts.remove(at: i)
+            resumeCollector(id)
             status.removeValue(forKey: id); nextPoll.removeValue(forKey: id); failures.removeValue(forKey: id)
             record("\(slot.displayName) 已从看板移除，Chrome 登录未改变。")
             onDesktopChange?()
@@ -380,6 +446,95 @@ enum SlotStatus: Equatable {
     func openAccountPage(_ id: String) {
         do { try openChrome(for: id, url: URL(string: "https://chatgpt.com/codex/settings/usage")!) }
         catch { banner = safeError(error) }
+    }
+    func enableFileCredentials() {
+        guard !usesFileCredentials, !migratingCredentials, launchingDesktop.isEmpty, loginSlotID == nil, canConnect else { return }
+        let alert = NSAlert()
+        alert.messageText = "改用 Codex 本地文件保存登录？"
+        alert.informativeText = "这会把已连接账号的登录凭据保存到本机私有目录中的 auth.json（目录 700、文件 600），与 Codex 默认文件模式一致。文件本身不加密，同一 macOS 用户下的程序可能读取；不再享有钥匙串的逐应用授权。原钥匙串记录保留。旧账号分别保存在独立钥匙串条目中；迁移时每个尚未授权的条目可能各询问一次，无法承诺只输入一次密码；完成后管家的采集和切号不再访问钥匙串。"
+        alert.addButton(withTitle: "同意并迁移")
+        alert.addButton(withTitle: "保留钥匙串")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        migratingCredentials = true; launchingDesktop.insert("credential-migration")
+        Task {
+            defer {
+                self.migratingCredentials = false; self.launchingDesktop.remove("credential-migration")
+                self.nextPoll.removeAll(); self.nextUsagePoll.removeAll(); self.onChange?()
+            }
+            do {
+                for _ in 0..<650 {
+                    if self.busy.isEmpty && self.usageLoading.isEmpty { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                guard self.busy.isEmpty, self.usageLoading.isEmpty else { throw DesktopSwitchFailure.collectorsBusy }
+                for client in self.clients.values {
+                    guard await client.stopAndWait() else { throw DesktopSwitchFailure.collectorStop }
+                }
+                self.clients.removeAll()
+                try self.sharedDesktop.migrateToFiles(accounts: self.saved.accounts, legacy: self.accountDesktop)
+                for slot in self.saved.accounts { self.resumeCollector(slot.id) }
+                self.banner = "已改用本地文件保存登录，原钥匙串记录保留。当前 Codex 未重启。"
+            } catch {
+                self.banner = "迁移未完成，仍使用原存储。" + ((error as? DesktopSwitchFailure)?.localizedDescription ?? "请检查钥匙串授权或文件权限后重试。")
+            }
+        }
+    }
+    func openAccountDesktop(_ id: String) {
+        guard canConnect, let selected = slot(id), selected.expectedAccountID != nil,
+              loginSlotID == nil, launchingDesktop.isEmpty else { return }
+        // This check is read-only. Explain an existing blocker before asking for a restart.
+        do { try sharedDesktop.preflight(accounts: saved.accounts, legacy: accountDesktop) }
+        catch {
+            banner = (error as? DesktopSwitchFailure)?.localizedDescription
+                ?? (error as? DesktopLaunchError)?.localizedDescription
+                ?? "无法检查切换条件，未退出 Codex 或修改登录。"
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = sharedDesktop.pending ? "恢复上次未完成的切换" : "切换到 \(selected.displayName)？"
+        alert.informativeText = "将退出并重新打开当前 Codex，保留原项目、会话文件和配置。正在执行的任务会被中断，请先等它们结束。此前打开的独立账号窗口需要先退出。"
+        alert.addButton(withTitle: sharedDesktop.pending ? "恢复登录" : "切换并重启")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        launchingDesktop.insert(id)
+        Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.launchingDesktop.remove(id)
+                self.nextPoll.removeAll(); self.nextUsagePoll.removeAll()
+                self.onChange?()
+            }
+            do {
+                try self.sharedDesktop.preflight(accounts: self.saved.accounts, legacy: self.accountDesktop)
+                self.banner = "正在等待当前额度查询结束，随后切换账号…"
+                // Freeze new polls, wait for in-flight calls, then stop every owned collector.
+                // Startup (20s) plus one request (35s) can exceed the old 40s deadline.
+                for _ in 0..<650 {
+                    if self.busy.isEmpty && self.usageLoading.isEmpty { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                guard self.busy.isEmpty, self.usageLoading.isEmpty else { throw DesktopSwitchFailure.collectorsBusy }
+                self.banner = "正在停止管家的额度采集…"
+                for client in self.clients.values {
+                    guard await client.stopAndWait() else { throw DesktopSwitchFailure.collectorStop }
+                }
+                self.clients.removeAll()
+                self.banner = "正在切换并重新打开 Codex…"
+                try await self.sharedDesktop.switchAccount(slot: selected, accounts: self.saved.accounts, legacy: self.accountDesktop)
+                self.resumeCollector(id)
+                self.banner = "已重新打开 Codex，项目与会话目录保持原位。请核对当前账号为 \(selected.displayName)。"
+                self.nextPoll.removeAll(); self.nextUsagePoll.removeAll()
+            } catch {
+                self.banner = (error as? DesktopSwitchFailure)?.localizedDescription
+                    ?? (error as? DesktopLaunchError)?.localizedDescription
+                    ?? "切换未完成，已停止操作。请检查钥匙串权限后重试。"
+            }
+        }
+    }
+    func desktopActionLabel(_ id: String) -> String {
+        if !launchingDesktop.isEmpty { return "正在切换 Codex…" }
+        if sharedDesktop.pending { return "恢复未完成的切换…" }
+        return sharedDesktop.selection?.slotID == id ? "重新打开当前账号的 Codex…" : "切换到此账号（保留项目和会话）…"
     }
     private func openChrome(for id: String, url: URL) throws {
         guard let slot = slot(id) else { return }

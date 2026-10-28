@@ -101,7 +101,7 @@ public enum ResetAnnouncementAPI {
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("CodexAccounts/0.1.0-beta.1 (+local-announcement-monitor)", forHTTPHeaderField: "User-Agent")
+        request.setValue("CodexAccounts/0.2.0-beta.1 (+local-announcement-monitor)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               data.count <= 4_000_000 else { throw ResetFeedError.invalidResponse }

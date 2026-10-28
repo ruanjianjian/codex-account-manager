@@ -2,7 +2,7 @@
 
 A local-first macOS menu-bar app for multiple Codex accounts. 原生 macOS 多账号额度组件。
 
-**测试版 v0.1.0-beta.1** · macOS 14+ · 首发下载包仅 Apple Silicon · MIT
+**测试版 v0.2.0-beta.1** · macOS 14+ · 首发下载包仅 Apple Silicon · MIT
 
 独立社区工具，与 OpenAI、X、DeepSeek 无隶属或背书关系。所有账号都由使用者自行登录；不附带账号、API Key、Cookie 或任何个人登录数据。
 
@@ -16,9 +16,22 @@ A local-first macOS menu-bar app for multiple Codex accounts. 原生 macOS 多�
 
 额度是服务端账号总额度，包含该账号在其他电脑上的使用，无需在其他电脑也装本工具。不能按设备拆分消耗，也不把百分比换算成 token。
 
+## v0.2.0 新增：切换桌面账号与文件凭据模式
+
+- 点击已连接账号的名称 → 确认“切换并重启”。先结束正在运行的任务；Codex 会短暂退出再打开。沿用默认项目和会话目录，不复制或搬迁工作区。
+- 当前适配 Codex 桌面 `26.1021.31345`、`26.1023.50603` 和默认 `~/.codex` 文件登录模式；其他版本或登录存储配置会拒绝操作。独立终端、机器人或其他应用的 Codex 进程仍在运行时也会阻止切换，不强杀进程。
+- 设置 → 登录存储 → **改用本地文件存储…**：先自行连接账号，再阅读并确认迁移。账号目录权限700、文件600；**文件本身不加密，同一macOS用户下的程序可能读取**，不再享有钥匙串逐应用授权。原钥匙串记录保留。旧条目可能分别要求授权，不能保证迁移只输入一次密码。
+- 文件模式启用后，管家的采集、切换和回退改读写本机文件，避免此次跨签名钥匙串反复授权问题。仍可能需要上游重新登录或2FA，不承诺所有系统弹窗永不出现。
+- 继续使用钥匙串时，访问失败或查询超时会暂停该账号自动重试；处理后从该账号菜单点“刷新”恢复。
+- 当前用于桌面的账号不能直接重新连接或移除；请先切到其他账号。迁移为单向入口，暂不提供一键迁回钥匙串。
+
+## 从旧测试版升级
+
+退出旧的 **Codex Accounts Beta.app**，将旧应用移到废纸篓，再放入新版。**不要删除 `CodexAccountsPublic` 数据目录**，已连接账号和偏好会保留。升级不会自动迁移凭据；需到设置主动选择。私人构建使用独立目录，不会自动导入。
+
 ## 安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.1.0-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.2.0-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 **Codex Accounts Beta.app** 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。本版开发验证使用 CLI 0.154.0；旧版可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
@@ -58,7 +71,7 @@ swift test
 
 - 初次启动为空账号列表，默认关闭公告监控、通知、开机启动和全局快捷键；可在设置中启用。
 - 公开版标识为 `io.github.ruanjianjian.codex-accounts`，数据独立保存在 `~/Library/Application Support/CodexAccountsPublic/`。
-- 不自动导入其他应用的数据，不更改其他 Codex 客户端登录。WebKit 的 X 登录态和应用偏好也使用公开版独立身份。
+- 不自动导入其他应用的数据。只有点击账号名称并确认“切换并重启”才更改默认 Codex 桌面的登录。WebKit 的 X 登录态和应用偏好也使用公开版独立身份。
 - 若已有个人构建，可同时保留；不要给两者配置相同快捷键。不同 Codex 客户端同时发起 OAuth 可能争用 localhost 回调端口，请按次完成授权。
 - 账号菜单可重新连接或移除连接。钥匙串可能要求首次访问授权；系统安全策略、更新或登录失效仍可能要求重新验证，不能保证永远不弹窗。
 
@@ -76,7 +89,7 @@ DeepSeek 手动测试入口是实验功能，**目前未验证能成功抓取 X*
 
 详见 [PRIVACY.md](PRIVACY.md)、[SECURITY.md](SECURITY.md) 和 [测试版验证记录](docs/VALIDATION.md)。请勿在 Issue 上传账户目录、Cookie、Key、OAuth 回调链接或未经脱敏的截图。
 
-账号/额度读取使用官方 Codex app-server 的实验协议，不保证所有套餐、CLI 版本或未来接口兼容。没有模型推理请求，不自动切换你正在使用的 Codex 账号，不代用重置券。实际额度以官方返回为准。
+账号/额度读取使用官方 Codex app-server 的实验协议，不保证所有套餐、CLI 版本或未来接口兼容。额度查询没有模型推理请求，不会自动切号，也不代用重置券。主动切号会重启默认 Codex 桌面。实际额度以官方返回为准。
 
 ## 卸载
 

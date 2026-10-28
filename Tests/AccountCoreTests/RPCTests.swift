@@ -23,6 +23,14 @@ final class RPCTests: XCTestCase {
         let result = try await client.request("probe/fragment")
         XCTAssertEqual(result["fragmented"] as? Bool, true)
     }
+    @MainActor func testKeychainErrorsHaveSafeDistinctClassification() async throws {
+        let client = makeClient(); defer { client.stop() }
+        do { _ = try await client.request("probe/keychain"); XCTFail("Expected keychain failure") }
+        catch {
+            guard case ClientFailure.keychainAccess = error else { return XCTFail("Wrong classification") }
+            XCTAssertFalse(error.localizedDescription.contains("secret"))
+        }
+    }
     @MainActor func testRawCredentialErrorsNeverEscape() async throws {
         let client = makeClient(); defer { client.stop() }
         do { _ = try await client.request("probe/error"); XCTFail("Expected auth failure") }

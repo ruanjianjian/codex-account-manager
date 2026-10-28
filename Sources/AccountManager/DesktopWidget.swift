@@ -134,7 +134,12 @@ struct DesktopWidgetView: View {
             HStack(alignment: .top, spacing: 5) {
                 VStack(alignment: .leading, spacing: 3) {
                     if let profile = store.profileCaption(slot) { Text(profile).font(.system(size: 10, weight: .medium)).lineLimit(1) }
-                    Text(slot.displayName).font(.system(size: 13, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8).help(slot.displayName)
+                    Button { store.openAccountDesktop(slot.id) } label: {
+                        Text(slot.displayName).font(.system(size: 13, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
+                    }.buttonStyle(.plain)
+                        .disabled(store.preview || store.loginSlotID != nil || !store.launchingDesktop.isEmpty || slot.expectedAccountID == nil)
+                        .help(store.desktopActionLabel(slot.id))
+                        .accessibilityLabel("\(slot.displayName) · \(store.desktopActionLabel(slot.id))")
                 }
                 Spacer(minLength: 0)
                 Menu { accountActions(slot) } label: {
@@ -199,6 +204,9 @@ struct DesktopWidgetView: View {
     }
 
     @ViewBuilder private func accountActions(_ slot: AccountSlot) -> some View {
+        Button(store.desktopActionLabel(slot.id)) { store.openAccountDesktop(slot.id) }
+            .disabled(store.preview || store.loginSlotID != nil || !store.launchingDesktop.isEmpty || slot.expectedAccountID == nil)
+        Divider()
         Button("额度与 reset 明细…") { present(.details(slot.id)) }.disabled(slot.snapshot == nil)
         Button("名称与浏览器…") { present(.edit(slot)) }
         Button("刷新") { store.refresh(slot.id) }.disabled(store.status[slot.id] == .checking || store.preview)

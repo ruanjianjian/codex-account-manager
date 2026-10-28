@@ -1,13 +1,14 @@
 import Foundation
 
 public enum ClientFailure: Error, LocalizedError {
-    case missingBinary, timeout, disconnected, invalidResponse, authentication, service(Int), fileAccess
+    case missingBinary, timeout, disconnected, invalidResponse, authentication, keychainAccess, service(Int), fileAccess
     public var errorDescription: String? {
         switch self {
         case .missingBinary: return "未找到 Codex CLI，请安装后重新打开管家。"
         case .timeout: return "服务响应超时，已保留上次数据；稍后自动重试。"
         case .disconnected: return "采集连接已中断，稍后会重新连接。"
         case .invalidResponse: return "服务返回格式无法识别，请更新管家后重试。"
+        case .keychainAccess: return "钥匙串访问未完成，已暂停自动同步。请从此账号菜单点“刷新”手动重试。"
         case .authentication: return "登录需要重新验证，请点“重新连接”。"
         case .service(let code): return "服务暂不可用（\(code)），已保留登录；稍后重试。若持续失败，请检查网络与钥匙串权限。"
         case .fileAccess: return "无法保存本机数据，请检查目录权限。"
@@ -29,7 +30,11 @@ public enum ClientFailure: Error, LocalizedError {
     public var onNotification: ((String, [String: Any]) -> Void)?
     public let home: URL
     private let executable: URL
-    public init(home: URL, executable: URL) { self.home = home; self.executable = executable }
+    private let prepareHome: Bool
+    private let credentialStore: String
+    public init(home: URL, executable: URL, prepareHome: Bool = true, credentialStore: String = "keyring") {
+        self.home = home; self.executable = executable; self.prepareHome = prepareHome; self.credentialStore = credentialStore
+    }
 
     public static func isolatedEnvironment(home: URL, inherited: [String: String]) -> [String: String] {
         let keep = ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_CA_CERTIFICATE"]
@@ -48,13 +53,20 @@ public enum ClientFailure: Error, LocalizedError {
     }
     private func launch() async throws {
         guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw ClientFailure.missingBinary }
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: home.path)
-        let config = "cli_auth_credentials_store = \"keyring\"\n[analytics]\nenabled = false\n"
-        try config.write(to: home.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
+        if prepareHome {
+            try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: home.path)
+        }
+        let config = "cli_auth_credentials_store = \"\(credentialStore)\"\n[analytics]\nenabled = false\n"
+        // A desktop window may now share this account's home. Preserve its settings.
+        let configURL = home.appendingPathComponent("config.toml")
+        if prepareHome && !FileManager.default.fileExists(atPath: configURL.path) {
+            try Data(config.utf8).write(to: configURL, options: .withoutOverwriting)
+        }
         let proc = Process(), stdin = Pipe(), stdout = Pipe()
         proc.executableURL = executable
-        proc.arguments = ["app-server", "--listen", "stdio://", "-c", "cli_auth_credentials_store=\"keyring\""]
+        guard ["keyring", "file"].contains(credentialStore) else { throw ClientFailure.fileAccess }
+        proc.arguments = ["app-server", "--listen", "stdio://", "-c", "cli_auth_credentials_store=\"\(credentialStore)\""]
         proc.environment = Self.isolatedEnvironment(home: home, inherited: ProcessInfo.processInfo.environment)
         proc.currentDirectoryURL = home
         proc.standardInput = stdin; proc.standardOutput = stdout; proc.standardError = FileHandle.nullDevice
@@ -118,8 +130,9 @@ public enum ClientFailure: Error, LocalizedError {
             if let error = message["error"] as? [String: Any] {
                 // Never put raw RPC errors, OAuth URLs, or tokens in UI/logs.
                 let text = (error["message"] as? String ?? "").lowercased()
+                let keychain = ["keyring", "keychain", "errsecinteractionnotallowed", "user canceled", "user cancelled", "-25308", "-128"].contains { text.contains($0) }
                 let auth = ["unauthorized", "401", "refresh_token_reused", "refresh token has expired", "not logged in", "authentication required"].contains { text.contains($0) }
-                continuation.resume(throwing: auth ? ClientFailure.authentication : ClientFailure.service(error["code"] as? Int ?? -1))
+                continuation.resume(throwing: keychain ? ClientFailure.keychainAccess : (auth ? ClientFailure.authentication : ClientFailure.service(error["code"] as? Int ?? -1)))
             } else if let result = message["result"] as? [String: Any] { continuation.resume(returning: result) }
             else { continuation.resume(throwing: ClientFailure.invalidResponse) }
         }
@@ -139,5 +152,14 @@ public enum ClientFailure: Error, LocalizedError {
             DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if proc.isRunning { kill(proc.processIdentifier, SIGKILL) } }
         }
         process = nil; output = nil; buffer = Data()
+    }
+    public func stopAndWait() async -> Bool {
+        let previous = process
+        stop()
+        for _ in 0..<40 {
+            if previous?.isRunning != true { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return previous?.isRunning != true
     }
 }

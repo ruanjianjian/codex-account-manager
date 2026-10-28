@@ -5,6 +5,8 @@ for line in sys.stdin:
     if 'id' not in request: continue
     method=request['method']
     if method=='probe/timeout': continue
+    if method=='probe/keychain':
+        print(json.dumps({'id':request['id'],'error':{'code':-32603,'message':'Failed to load from keyring secret-must-not-escape'}}),flush=True); continue
     if method=='probe/error':
         print(json.dumps({'id':request['id'],'error':{'code':401,'message':'Unauthorized secret-must-not-escape'}}),flush=True); continue
     if method=='probe/disconnect': sys.exit(0)
