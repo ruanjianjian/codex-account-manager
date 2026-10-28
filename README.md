@@ -73,4 +73,6 @@ DeepSeek 手动测试入口是实验功能，**目前未验证能成功抓取 X*
 
 欢迎通过 Issue 提交已脱敏的系统版本、CLI版本、复现步骤与错误类别。PR 请运行 `swift test` 与 `./scripts/build.sh`，不要提交真实账号信息。发布前运行 `gitleaks git . --redact` 和 `gitleaks dir . --redact`。
 
+发布者的签名、公证与票据校验流程见 [NOTARIZATION.md](docs/NOTARIZATION.md)。当前测试包仍以 Release 标注的签名状态为准。
+
 [MIT License](LICENSE)

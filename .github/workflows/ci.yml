@@ -13,6 +13,8 @@ jobs:
         run: swift --version
       - name: Unit tests (no credentials)
         run: swift test
+      - name: Notarization workflow tests (offline)
+        run: python3 -m unittest discover -s scripts/tests
       - name: Build app
         run: ./scripts/build.sh
       - name: Verify signing

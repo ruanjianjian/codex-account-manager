@@ -14,3 +14,9 @@ state.json
 personal-x-monitor.json
 reset-monitor.json
 deepseek-test-result.json
+.notarization/
+*.p8
+*.p12
+*.mobileprovision
+__pycache__/
+*.pyc

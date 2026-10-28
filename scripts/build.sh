@@ -30,6 +30,11 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP_DIR"
+# Signing is explicit: never pick a developer identity from the local Keychain.
+if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
+  codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp "$APP_DIR"
+else
+  codesign --force --sign - --options runtime "$APP_DIR"
+fi
 codesign --verify --deep --strict "$APP_DIR"
 print "Built: $APP_DIR"
