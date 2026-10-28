@@ -2,6 +2,8 @@
 
 此流程供发布者使用，普通用户无需执行。现有下载包是否已公证，以对应 Release 的说明及校验结果为准；增加此脚本本身不代表公证完成。
 
+当前公开 Beta 暂不进行公证，继续提供现有 GitHub 下载包。安装时如被 macOS 拦截，请参阅 [README 的首次打开说明](../README.md#首次打开手动放行)。下文保留为未来可选的发布流程。
+
 ## 前提
 
 - 发布者自己的 Apple Developer 身份、有效的 **Developer ID Application** 证书及其私钥；Apple Development / iOS Distribution 不能替代。

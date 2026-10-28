@@ -21,9 +21,22 @@ A local-first macOS menu-bar app for multiple Codex accounts. 原生 macOS 多�
 1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.1.0-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 **Codex Accounts Beta.app** 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。本版开发验证使用 CLI 0.154.0；旧版可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
-4. 打开应用，从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
+4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
 
-下载包仅作 ad-hoc 签名，**未经 Apple Developer ID 签名或公证**。macOS 可能拦截下载版；仅在确认来源和校验值后，使用系统设置「隐私与安全性」里的「仍要打开」。不要关闭 Gatekeeper。若不希望放行未公证下载，可从源码自行构建。
+### 首次打开：手动放行
+
+当前测试版暂不进行 Apple 公证，下载包仅作 ad-hoc 签名，**未经 Apple Developer ID 签名或公证**。下载和使用本工具不需要购买 Apple Developer 会员。
+
+确认下载来自本仓库的 Release 且上面的 SHA-256 校验通过后，如遇到「无法验证开发者」或「Apple 无法检查是否包含恶意软件」提示：
+
+1. 先双击 **Codex Accounts Beta.app** 尝试打开；出现拦截提示时关闭提示，保留应用。
+2. 打开 Mac 的 **系统设置 → 隐私与安全性**，向下滚动到「安全性」。
+3. 找到针对 **Codex Accounts Beta** 的拦截提示，点 **「仍要打开」**。
+4. 按系统提示验证身份，并在再次出现的确认框中点 **「打开」**。
+
+系统会记住对这个 App 的允许，后续通常可直接双击打开；更新版本后可能需要再次确认。此操作只针对这个 App，**无需关闭 Gatekeeper，也无需执行解除安全限制的终端命令**。步骤依据 [Apple 官方说明：在 Mac 上安全地打开 App](https://support.apple.com/zh-cn/102445)；不同 macOS 版本的文案可能略有差异。
+
+若没有「仍要打开」，先确认已尝试打开应用；受公司或学校管理的 Mac 可能不允许自行放行。若提示「将损坏你的电脑」或「App 已损坏」，请勿把它当作普通的未公证提示，重新下载并核对校验值，仍有问题可提交已脱敏的 Issue。若不希望放行未公证下载，可从源码自行构建。
 
 ## 从源码构建
 
@@ -73,6 +86,6 @@ DeepSeek 手动测试入口是实验功能，**目前未验证能成功抓取 X*
 
 欢迎通过 Issue 提交已脱敏的系统版本、CLI版本、复现步骤与错误类别。PR 请运行 `swift test` 与 `./scripts/build.sh`，不要提交真实账号信息。发布前运行 `gitleaks git . --redact` 和 `gitleaks dir . --redact`。
 
-发布者的签名、公证与票据校验流程见 [NOTARIZATION.md](docs/NOTARIZATION.md)。当前测试包仍以 Release 标注的签名状态为准。
+供发布者将来选择使用的签名、公证与票据校验流程见 [NOTARIZATION.md](docs/NOTARIZATION.md)；它不是安装步骤。当前测试包仍以 Release 标注的签名状态为准。
 
 [MIT License](LICENSE)
