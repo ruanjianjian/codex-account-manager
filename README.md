@@ -95,6 +95,12 @@ DeepSeek 手动测试入口是实验功能，**目前未验证能成功抓取 X*
 
 先在公开版设置中关闭「登录 Mac 时启动」，按需从账号菜单移除账号连接，然后退出并将 **Codex Accounts Beta.app** 移到废纸篓。删除应用本身不会删除登录和缓存。如需清除，使用设置里的「打开本机数据目录」核对公开版目录后手动删除；X 网站数据由系统 WebKit 存储，应用重装后可能仍保留。不要删除其他客户端的目录或钥匙串条目。
 
+## 致谢与设计参考
+
+感谢 [yetone](https://github.com/yetone) 的开源项目 [Magpie](https://github.com/yetone/magpie)。本项目后续的本机网关与多账号自动路由方案，借鉴了 Magpie 的设计：统一承接模型请求、在账号额度耗尽时自动选择备用账号，以及尽量让同一会话保持使用同一账号。
+
+目前发布的 `v0.2.0-beta.1` 尚未集成 Magpie 网关或复用其源码，仍使用上文说明的“切换并重启”方式。此处说明的是后续方案的设计来源；若后续复用源码，将保留对应的版权、许可证与第三方声明。Magpie 使用 [MIT 许可证](https://github.com/yetone/magpie/blob/6e080ca0440ebe8d75b8eedd5bc78dd508542bed/LICENSE)，本项目独立开发与维护。
+
 ## 贡献
 
 欢迎通过 Issue 提交已脱敏的系统版本、CLI版本、复现步骤与错误类别。PR 请运行 `swift test` 与 `./scripts/build.sh`，不要提交真实账号信息。发布前运行 `gitleaks git . --redact` 和 `gitleaks dir . --redact`。
