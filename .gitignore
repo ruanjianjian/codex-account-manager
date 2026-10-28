@@ -1,0 +1,16 @@
+.build/
+.swiftpm/
+.test-artifacts/
+dist/
+.DS_Store
+*.app/
+*.dSYM/
+*.zip
+*.log
+.env
+.env.*
+auth.json
+state.json
+personal-x-monitor.json
+reset-monitor.json
+deepseek-test-result.json

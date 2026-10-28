@@ -1,0 +1,19 @@
+name: macOS build and tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  swift:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: Unit tests (no credentials)
+        run: swift test
+      - name: Build app
+        run: ./scripts/build.sh
+      - name: Verify signing
+        run: codesign --verify --deep --strict 'dist/Codex Accounts Beta.app'
