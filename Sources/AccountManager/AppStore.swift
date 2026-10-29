@@ -195,12 +195,17 @@ enum SlotStatus: Equatable {
     /// resumed conversations, so restoring the direct provider recovers them; the toggle stays as chosen.
     private func fallBackToDirect(_ reason: String) {
         let wasInstalled = gateway.configuration.installed
+        // Restore first: if the provider table was edited elsewhere, a helper that still runs keeps serving.
+        do { try gateway.configuration.restore() } catch {
+            gatewayCaption = "\(reason) · \(error.localizedDescription) 请在 ~/.codex/config.toml 删除 openai_base_url 一行后重启 Codex。"
+            if gateway.running { return }
+            gatewayReady = false; gatewayAccount = nil; routingActivity.receive(.init(kind: "stopped"))
+            return
+        }
         try? gateway.stop(restore: false)
         gatewayReady = false; gatewayAccount = nil; routingActivity.receive(.init(kind: "stopped"))
-        do {
-            try gateway.configuration.restore()
-            gatewayCaption = wasInstalled ? "\(reason) · 已恢复直连，Codex 新开或继续的会话不经网关" : reason
-        } catch { gatewayCaption = "\(reason) · \(error.localizedDescription)" }
+        // Conversations the gateway created on another account carry that account's sealed history.
+        gatewayCaption = wasInstalled ? "\(reason) · 已恢复直连；经网关在其他账号上开的会话需等网关恢复后再继续" : reason
     }
     /// Only reasons a Codex conversation can cause; local probes (for example a web page) never change the caption.
     private func rejectionCaption(_ event: GatewayActivityEvent) -> String? {
@@ -315,15 +320,22 @@ enum SlotStatus: Equatable {
     }
     private func client(_ id: String) throws -> RPCClient {
         try verifySharedIdentity(id)
-        if let client = clients[id] { return client }
+        let shared = desktopSelection?.slotID == id
+        let home = shared ? sharedDesktop.home : root.appendingPathComponent("accounts/\(id)")
+        // A login inside Codex can move the desktop between ticks: never reuse a client aimed at the
+        // other home (a logout sent to the shared home would sign the desktop out).
+        if let client = clients[id] {
+            if client.home.standardizedFileURL == home.standardizedFileURL { return client }
+            client.stop(); clients.removeValue(forKey: id)
+        }
         let client: RPCClient
-        if desktopSelection?.slotID == id {
+        if shared {
             let plan = try SharedDesktopPlan(home: sharedDesktop.home)
             let config = sharedDesktop.home.appendingPathComponent("config.toml")
             try plan.validateConfiguration(FileManager.default.fileExists(atPath: config.path) ? try String(contentsOf: config, encoding: .utf8) : "")
             client = RPCClient(home: sharedDesktop.home, executable: try Self.binary(), prepareHome: false, credentialStore: "file")
         } else {
-            client = RPCClient(home: root.appendingPathComponent("accounts/\(id)"), executable: try Self.binary(), credentialStore: usesFileCredentials ? "file" : "keyring")
+            client = RPCClient(home: home, executable: try Self.binary(), credentialStore: usesFileCredentials ? "file" : "keyring")
         }
         client.onNotification = { [weak self] method, params in self?.handleNotification(id, method, params) }
         clients[id] = client
@@ -538,7 +550,11 @@ enum SlotStatus: Equatable {
                     if status[id] == .connected { connectNext() } else { loginQueue.removeAll() }
                 }
             } else {
-                status[id] = .failure("登录未完成，请重新连接。已有账号不会退出。")
+                // Some Codex builds cannot write the Keychain when started by another app; the browser sign-in still succeeded.
+                let reason = (params["error"] as? String ?? "").lowercased()
+                let keyring = !usesFileCredentials && ["keyring", "secure storage", "keychain"].contains { reason.contains($0) }
+                status[id] = .failure(keyring ? "登录已完成，但系统钥匙串无法保存。请在“管家设置”改用本地文件存储后重新连接。"
+                                              : "登录未完成，请重新连接。已有账号不会退出。")
                 loginQueue.removeAll()
             }
         } else if method == "account/rateLimits/updated", !busy.contains(id), loginSlotID != id,
@@ -1000,7 +1016,7 @@ enum SlotStatus: Equatable {
     }
     func shutdown() {
         // Keep the routing preference for the next launch, but leave Codex on the direct provider while we are gone.
-        try? gateway.stop(restore: false); try? gateway.configuration.restore()
+        try? gateway.configuration.restore(); try? gateway.stop(restore: false)
         personalXTask?.cancel(); xBrowser?.stop()
         clearDeepSeekKey()
         timer?.invalidate(); resetCheckTask?.cancel()

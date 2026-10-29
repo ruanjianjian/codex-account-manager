@@ -143,12 +143,12 @@ func TestExpiredAndPreferred(t *testing.T) {
 	c := pool()
 	c.Preferred = "two"
 	g := newGateway(func() (config, error) { return c, nil }, "", func(event) {})
-	xs, _ := g.candidates(c, "", false)
+	xs, _ := g.candidates(c, "", false, "")
 	if len(xs) != 2 || xs[0].ID != "two" || xs[1].ID != "one" {
 		t.Fatal(xs)
 	}
 	c.Accounts[1].Expires = 1
-	xs, _ = g.candidates(c, "", false)
+	xs, _ = g.candidates(c, "", false, "")
 	if len(xs) != 1 || xs[0].ID != "one" {
 		t.Fatal("expired token used", xs)
 	}
@@ -333,5 +333,54 @@ func TestRejectionsAreRecordedWithReason(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "503:no_available_account:,409:sealed_owner_unavailable:one" {
 		t.Fatal(got)
+	}
+}
+
+func TestRouteNameKeepsOnlyShape(t *testing.T) {
+	for path, want := range map[string]string{
+		"/backend-api/codex/memories/trace_summarize":           "POST /backend-api/codex/memories/trace_summarize",
+		"/backend-api/codex/files/file_9Xq2/content?sig=secret": "POST /backend-api/codex/files/:id/content",
+		"/v1/Bearer.eyJhbGciOi/x":                               "POST /v1/:id/x",
+		"/a/b/c/d/e/f/g/h":                                      "POST /a/b/c/d/e/f/...",
+	} {
+		r := httptest.NewRequest("POST", "http://127.0.0.1"+path, nil)
+		if got := routeName(r); got != want {
+			t.Errorf("%s: got %q want %q", path, got, want)
+		}
+	}
+}
+
+// Desktop logged in to B resumes a thread whose sealed history is A's: the guess fails upstream.
+// Once the desktop is back on A the thread must work again, not stay pinned to B.
+func TestFailedOwnerGuessIsNotPinned(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(b), "sealed-"+r.Header.Get("chatgpt-account-id")) {
+			w.WriteHeader(400)
+			io.WriteString(w, `{"error":{"message":"The encrypted content could not be verified."}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	}))
+	defer up.Close()
+	g := newGateway(func() (config, error) { return pool(), nil }, up.URL, func(event) {})
+	send := func(token, account string) int {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:18455/backend-api/codex/responses", strings.NewReader(`{"input":[{"encrypted_content":"sealed-acct-one"}]}`))
+		r.Header.Set("Authorization", "Bearer "+token)
+		r.Header.Set("chatgpt-account-id", account)
+		r.Header.Set("session-id", "thread-from-one")
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := send("token-two", "acct-two"); code != 400 {
+		t.Fatalf("wrong-account guess: %d", code)
+	}
+	if code := send("token-one", "acct-one"); code != 200 {
+		t.Fatalf("thread stayed pinned to the failed guess: %d", code)
+	}
+	if code := send("token-two", "acct-two"); code != 200 {
+		t.Fatalf("recorded owner not kept after success: %d", code)
 	}
 }

@@ -20,7 +20,8 @@ public struct CredentialFileStore {
         try PrivateAtomicFile.write(credential.data, to: url)
     }
     public func activate(_ credentials: [(String, DesktopCredential)]) throws {
-        guard !enabled, !credentials.isEmpty, Set(credentials.map { $0.0 }).count == credentials.count else { throw DesktopSwitchFailure.persistence }
+        // An empty list is a fresh install opting in before its first login (some Codex builds cannot write the Keychain).
+        guard !enabled, Set(credentials.map { $0.0 }).count == credentials.count else { throw DesktopSwitchFailure.persistence }
         // Retain any previous file verbatim before replacing it. The original Keychain is retained too.
         for (id, credential) in credentials {
             let url = try auth(id), backup = url.appendingPathExtension("before-file-mode")

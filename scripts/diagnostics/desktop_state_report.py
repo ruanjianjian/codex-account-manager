@@ -7,7 +7,7 @@ It writes nothing, starts nothing and stops nothing.
 
     python3 -I scripts/diagnostics/desktop_state_report.py > ~/Desktop/codex-routing-state.json
 """
-import base64, glob, hashlib, json, os, pathlib, plistlib, re, sqlite3, subprocess, time
+import base64, glob, hashlib, json, os, pathlib, plistlib, re, sqlite3, subprocess, time, urllib.parse
 
 H = pathlib.Path.home()
 CODEX = pathlib.Path(os.environ.get("CODEX_HOME", H / ".codex"))
@@ -49,6 +49,28 @@ def credential(path):
             "access_expires_in_hours": round((exp - time.time()) / 3600, 1) if exp else None,
             "has_refresh_token": bool(tokens.get("refresh_token")), "api_key_mode": data.get("OPENAI_API_KEY") is not None,
             "mode_octal": oct(st.st_mode & 0o777), "symlink": path.is_symlink()}
+
+
+def safe_url(raw):
+    """Scheme, host, port and a known Codex path only: never credentials, query or custom paths."""
+    value = raw.strip().strip('"\'')
+    try:
+        u = urllib.parse.urlsplit(value)
+        port = ":%d" % u.port if u.port else ""
+        path = u.path.rstrip("/")
+        known = path in ("", "/backend-api", "/backend-api/codex", "/v1")
+        return "%s://%s%s%s%s" % (u.scheme, u.hostname or "", port, path if known else "/<custom path>",
+                                  "" if not (u.query or u.username or u.password) else " <query/credentials removed>")
+    except Exception:
+        return "<unparseable>"
+
+
+def safe_value(key, raw):
+    if key.endswith("base_url"):
+        return safe_url(raw)
+    value = raw.strip()
+    # Short plain words and numbers only (model names, booleans, retry counts, store mode).
+    return value if re.fullmatch(r'"?[A-Za-z0-9_. \-]{0,40}"?', value) else "<present>"
 
 
 def run(*cmd):
@@ -107,14 +129,20 @@ if config.exists():
             if line.startswith("[model_providers.codex_accounts_gateway]"):
                 block = {}
             continue
-        key = line.split("=", 1)[0].strip()
+        if "=" not in line or line.startswith("#"):
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
         if section is None and key in ("model_provider", "openai_base_url", "chatgpt_base_url", "cli_auth_credentials_store", "service_tier", "model"):
-            top[key] = line.split("=", 1)[1].strip()
-        elif section == "[model_providers.codex_accounts_gateway]" and "=" in line:
-            value = line.split("=", 1)[1].strip()
-            block[key] = "<redacted len=%d>" % (len(value) - 2) if key == "experimental_bearer_token" else value
+            top[key] = safe_value(key, value)
+        elif section == "[model_providers.codex_accounts_gateway]":
+            if key == "experimental_bearer_token":
+                block[key] = "<redacted len=%d>" % max(len(value) - 2, 0)
+            elif key in ("name", "base_url", "wire_api", "requires_openai_auth", "supports_websockets", "request_max_retries", "stream_max_retries"):
+                block[key] = safe_value(key, value)
+            else:
+                block[key] = "<present>"
 report["codex_config"] = {"present": config.exists(), "top_level": top, "gateway_provider_table": block,
-                          "points_at_local_gateway": "127.0.0.1" in top.get("openai_base_url", "")}
+                          "points_at_local_gateway": "://127.0.0.1" in top.get("openai_base_url", "")}
 desktop = credential(CODEX / "auth.json")
 report["desktop_login"] = desktop
 
@@ -154,6 +182,10 @@ for name, root in ROOTS.items():
                     e = json.loads(line)
                 except Exception:
                     continue
+                # Re-check the route shape even though new gateways already normalise it.
+                if e.get("route"):
+                    method, _, path = str(e["route"]).partition(" ")
+                    e["route"] = method[:8] + " /" + "/".join(p if re.fullmatch(r"[a-z_-]{1,32}|v[0-9]|:id|\.\.\.", p) else ":id" for p in path.strip("/").split("/"))
                 events.append({k: e.get(k) for k in ("time", "kind", "status", "reason", "route", "account") if e.get(k) is not None})
     counts = {}
     for e in events[-500:]:

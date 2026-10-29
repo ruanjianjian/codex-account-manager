@@ -118,15 +118,27 @@ func fail(w http.ResponseWriter, status int, msg string) {
 	json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": msg, "type": "gateway_error"}})
 }
 
-// Route names only, for diagnostics: never query strings or unexpected characters.
+// Route shape only, for diagnostics: no query string, and any segment that could be an
+// identifier (digits, long, or unusual characters) becomes ":id".
 func routeName(r *http.Request) string {
-	route := r.Method + " " + r.URL.Path
-	if len(route) > 96 || strings.IndexFunc(r.URL.Path, func(c rune) bool {
-		return !(c == '/' || c == '_' || c == '-' || c == '.' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z')
-	}) >= 0 {
-		return r.Method + " other"
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) > 6 {
+		parts = append(parts[:6], "...")
 	}
-	return route
+	for i, p := range parts {
+		if p == "..." {
+			continue
+		}
+		version := len(p) == 2 && p[0] == 'v' && p[1] >= '0' && p[1] <= '9'
+		if !version && (len(p) > 32 || strings.IndexFunc(p, func(c rune) bool { return !(c == '_' || c == '-' || c >= 'a' && c <= 'z') }) >= 0) {
+			parts[i] = ":id"
+		}
+	}
+	method := r.Method
+	if len(method) > 8 || strings.IndexFunc(method, func(c rune) bool { return c < 'A' || c > 'Z' }) >= 0 {
+		method = "OTHER"
+	}
+	return method + " /" + strings.Join(parts, "/")
 }
 func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Every gateway-side refusal is recorded with a fixed reason; upstream refusals emit "refused".
@@ -263,21 +275,20 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { g.emitRequest(r, event{Kind: "finished"}) }()
 	// Account-bound server state must never be silently stripped to enable fallback.
 	bound := bytes.Contains(body, []byte(`"encrypted_content"`)) || bytes.Contains(body, []byte(`"encrypted_function_args"`)) || len(obj["previous_response_id"]) > 0 || path == "/responses/compact"
-	// Native old threads supply their original logged-in account. Keep sealed state there.
-	if bound && nativeAccount != "" && session != "" {
-		g.mu.Lock()
-		if old := g.sticky[session]; old.ID == "" || old.Until.Before(time.Now()) {
-			g.sticky[session] = binding{ID: nativeAccount, Until: time.Now().Add(24 * time.Hour)}
-		}
-		g.mu.Unlock()
+	// A sealed thread the gateway never served is assumed to belong to the account the desktop is
+	// logged in to (old direct threads). Only a successful reply records that owner, so a wrong
+	// guess is not pinned once the desktop is back on the right account.
+	guess := ""
+	if session != "" {
+		guess = nativeAccount
 	}
-	candidates, stuck := g.candidates(c, session, bound)
+	candidates, stuck := g.candidates(c, session, bound, guess)
 	switch {
 	case stuck == "sealed_owner_unknown":
 		reject(409, stuck, "", "This conversation contains account-bound history from an unknown account; it was not sent to another account. Start a new conversation.")
 		return
 	case stuck != "":
-		owner := g.owner(session)
+		owner := g.owner(session, guess)
 		reject(409, stuck, owner, "This conversation's account-bound history must stay on account "+owner+", which is unavailable now (quota, cooldown or expired login). Wait for it to recover or start a new conversation.")
 		return
 	case len(candidates) == 0:
@@ -370,13 +381,16 @@ func retryAt(h http.Header, b []byte) time.Time {
 }
 
 // Returns the accounts to try in order, or why a sealed conversation cannot be served.
-func (g *gateway) candidates(c config, session string, bound bool) ([]account, string) {
+func (g *gateway) candidates(c config, session string, bound bool, guess string) ([]account, string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
 	old := g.sticky[session]
 	if old.Until.Before(now) {
 		old = binding{}
+	}
+	if old.ID == "" && bound {
+		old.ID = guess
 	}
 	// Without a recorded owner, sealed histories cannot safely be assigned, not even to Preferred.
 	if bound && old.ID == "" {
@@ -419,10 +433,13 @@ func (g *gateway) candidates(c config, session string, bound bool) ([]account, s
 	}
 	return out, ""
 }
-func (g *gateway) owner(session string) string {
+func (g *gateway) owner(session, guess string) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.sticky[session].ID
+	if b := g.sticky[session]; b.ID != "" && b.Until.After(time.Now()) {
+		return b.ID
+	}
+	return guess
 }
 func (g *gateway) remember(session, id string) {
 	if session == "" {

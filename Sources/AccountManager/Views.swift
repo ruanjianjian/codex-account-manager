@@ -121,8 +121,8 @@ struct GeneralSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
                 if !store.usesFileCredentials {
                     Button(store.migratingCredentials ? "正在迁移…" : "改用本地文件存储…") { store.enableFileCredentials() }
-                        .disabled(store.preview || !store.saved.accounts.contains(where: { $0.expectedAccountID != nil }) || store.migratingCredentials || store.loginSlotID != nil || !store.launchingDesktop.isEmpty)
-                    Text("先连接账号，再选择迁移。需确认存储方式变化；不会自动迁移或删除原钥匙串记录。")
+                        .disabled(store.preview || store.migratingCredentials || store.loginSlotID != nil || !store.launchingDesktop.isEmpty)
+                    Text("连接账号前后都可选择；已连接的账号会一并迁移。需确认存储方式变化；不会删除原钥匙串记录。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
