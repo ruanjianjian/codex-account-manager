@@ -29,9 +29,23 @@ public enum DesktopSwitchFailure: LocalizedError {
     }
 }
 
+/// Reads a JWT's payload without verifying it: for display and expiry only, never to authenticate.
+public enum JWTClaims {
+    public static func decode(_ token: String) -> [String: Any]? {
+        let parts = token.split(separator: ".")
+        guard parts.count == 3 else { return nil }
+        var payload = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+        guard let data = Data(base64Encoded: payload) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+}
+
 public struct DesktopCredential {
     public let data: Data
     public let accountID: String
+    /// From the id_token, to tell the user which account the desktop is signed in to.
+    public let email: String?
     public init(_ data: Data, expected: String? = nil) throws {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               object["OPENAI_API_KEY"] == nil || object["OPENAI_API_KEY"] is NSNull,
@@ -41,6 +55,7 @@ public struct DesktopCredential {
               let refresh = tokens["refresh_token"] as? String, !refresh.isEmpty,
               expected == nil || id == expected else { throw DesktopSwitchFailure.identity }
         self.data = data; accountID = id
+        email = (tokens["id_token"] as? String).flatMap { JWTClaims.decode($0)?["email"] as? String }
     }
 }
 

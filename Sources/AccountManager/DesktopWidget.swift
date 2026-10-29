@@ -94,7 +94,7 @@ struct DesktopWidgetView: View {
                 Button { present(.settings) } label: { Image(systemName: "slider.horizontal.3") }
                     .help("设置").accessibilityLabel("打开设置")
             }.buttonStyle(.plain).font(.system(size: 13))
-            if store.gatewayEnabled { RoutingActivityView(store: store) }
+            if store.gatewayEnabled { RoutingActivityView(store: store) } else if !store.preview { RoutingSetupView(store: store) }
             if let alert = store.resetAlert {
                 Link(destination: alert.url) {
                     Label(alert.text, systemImage: "bolt.fill").font(.system(size: 11, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)

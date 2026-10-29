@@ -128,7 +128,12 @@ enum SlotStatus: Equatable {
 
     init(preview: Bool = false) {
         self.preview = preview
-        root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/CodexAccountsPublic" + (preview ? "-Preview" : ""))
+        // CODEX_ACCOUNTS_DATA_DIR runs a clean first launch for testing; it never mixes with the real data directory.
+        if !preview, let dir = ProcessInfo.processInfo.environment["CODEX_ACCOUNTS_DATA_DIR"], dir.hasPrefix("/") {
+            root = URL(fileURLWithPath: dir, isDirectory: true)
+        } else {
+            root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/CodexAccountsPublic" + (preview ? "-Preview" : ""))
+        }
         saved = SavedState()
         do {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -194,7 +199,7 @@ enum SlotStatus: Equatable {
             default: break
             }
         }
-        if gatewayEnabled || CommandLine.arguments.contains("--enable-gateway") { setGatewayEnabled(true, confirm: false) }
+        if gatewayEnabled || CommandLine.arguments.contains("--enable-gateway") { setGatewayEnabled(true) }
         else if gateway.configuration.installed { fallBackToDirect("自动路由未开启") }
     }
     /// Never leave Codex pointed at a port nobody serves. Codex reloads config.toml for new and
@@ -247,14 +252,8 @@ enum SlotStatus: Equatable {
         }
         try gateway.save(accounts: accounts, preferred: gatewayPreferred, clients: identities)
     }
-    func setGatewayEnabled(_ enabled: Bool, confirm: Bool = true) {
+    func setGatewayEnabled(_ enabled: Bool) {
         guard !preview, persistenceEnabled else { return }
-        if enabled && confirm && !gatewayEnabled {
-            let alert = NSAlert(); alert.messageText = "启用自动账号路由？"
-            alert.informativeText = "保留官方连接方式与 Fast 设置，通过本机网关转发新旧会话。启用后重启 Codex，原会话可以继续使用。加密历史固定到原账号，原账号额度不足时会提示，不强行跨账号重放。"
-            alert.addButton(withTitle: "启用自动路由"); alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-        }
         do {
             if enabled {
                 do {
@@ -275,6 +274,32 @@ enum SlotStatus: Equatable {
             banner = error.localizedDescription
             if !enabled { gatewayCaption = error.localizedDescription }
         }
+    }
+    var routingSetup: RoutingSetup {
+        let desktop = sharedDesktop.desktopLogin()
+        return RoutingSetup.next(fileStorage: usesFileCredentials, desktopAccountID: desktop.accountID,
+                                 desktopEnrolled: desktopSelection != nil, desktopEmail: desktop.email)
+    }
+    var desktopAccountID: String? { sharedDesktop.desktopAccountID() }
+    /// nil until routing is first switched on or off, by the user or by the app.
+    var routingChoice: Bool? { UserDefaults.standard.object(forKey: "gateway.enabled") as? Bool }
+    private var autoRoutingTried = false
+    /// Once the setup is done, routing switches itself on (once per launch, so a failure is not retried every tick).
+    private func enableRoutingWhenReady() {
+        guard !preview, !autoRoutingTried, RoutingSetup.shouldEnable(routingSetup, enabled: gatewayEnabled, userChoice: routingChoice) else { return }
+        autoRoutingTried = true
+        setGatewayEnabled(true)
+        if gatewayEnabled { banner = "已自动开启自动路由。已打开的 Codex 会话重启 Codex 后也会经过路由。" }
+    }
+    /// The desktop's own login becomes an account: no browser sign-in, and no copy of its token.
+    func connectDesktopAccount() {
+        guard canConnect, loginSlotID == nil, launchingDesktop.isEmpty, case .desktopAccount = routingSetup,
+              let accountID = sharedDesktop.desktopAccountID() else { return }
+        let id = "account-" + UUID().uuidString.lowercased()
+        var slot = AccountSlot(id: id, name: "新账号", chromeProfile: "dedicated")
+        slot.expectedAccountID = accountID
+        saved.accounts.append(slot); status[id] = .disconnected; persist(); onChange?(); onDesktopChange?()
+        refresh(id)
     }
     func selectGatewayAccount(_ id: String) {
         gatewayPreferred = id; UserDefaults.standard.set(id, forKey: "gateway.preferred")
@@ -469,6 +494,7 @@ enum SlotStatus: Equatable {
                 fallBackToDirect("Codex 当前登录的账号未连接到管家")
             } else { do { try updateGatewayPool() } catch { gatewayCaption = error.localizedDescription } }
         }
+        enableRoutingWhenReady()
         checkResetAnnouncements()
         retryResetRefresh()
         if let started = loginStarted, now.timeIntervalSince(started) > 600 {
@@ -613,8 +639,8 @@ enum SlotStatus: Equatable {
     func enableFileCredentials() {
         guard !usesFileCredentials, !migratingCredentials, launchingDesktop.isEmpty, loginSlotID == nil, canConnect else { return }
         let alert = NSAlert()
-        alert.messageText = "改用 Codex 本地文件保存登录？"
-        alert.informativeText = "这会把已连接账号的登录凭据保存到本机私有目录中的 auth.json（目录 700、文件 600），与 Codex 默认文件模式一致。文件本身不加密，同一 macOS 用户下的程序可能读取；不再享有钥匙串的逐应用授权。原钥匙串记录保留。旧账号分别保存在独立钥匙串条目中；迁移时每个尚未授权的条目可能各询问一次，无法承诺只输入一次密码；完成后管家的采集和切号不再访问钥匙串。"
+        alert.messageText = "改用本机文件保存登录？"
+        alert.informativeText = "自动路由需要这个模式。登录凭据保存在本机私有目录的 auth.json，与 Codex 默认方式一致；文件不加密，同一 macOS 用户下的程序可能读取。原钥匙串记录保留。"
         alert.addButton(withTitle: "同意并迁移")
         alert.addButton(withTitle: "保留钥匙串")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -645,12 +671,15 @@ enum SlotStatus: Equatable {
     /// An account-name click: with routing on it orders new conversations; otherwise offer to turn routing on.
     func chooseAccount(_ id: String) {
         guard !preview, let selected = slot(id), selected.expectedAccountID != nil else { return }
+        if !gatewayEnabled && routingSetup != .ready {
+            banner = "先完成自动路由的设置：" + (routingSetup == .fileStorage ? "改用本机文件存储" : "连接 Codex 桌面正在登录的账号"); return
+        }
         if !gatewayEnabled {
             let alert = NSAlert(); alert.messageText = "开启自动账号路由？"
             alert.informativeText = "开启后新会话优先使用 \(selected.displayName)，额度用完自动换其他账号。已打开的会话需重启 Codex 后才经过路由。"
             alert.addButton(withTitle: "开启路由"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            setGatewayEnabled(true, confirm: false)
+            setGatewayEnabled(true)
             guard gatewayEnabled else { return }
         }
         selectGatewayAccount(id)

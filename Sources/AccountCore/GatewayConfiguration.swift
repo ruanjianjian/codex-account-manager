@@ -128,11 +128,7 @@ public struct GatewayAccount: Codable {
     public init(id: String, credential: DesktopCredential, available: Bool, reset: Double) throws {
         let raw = try JSONSerialization.jsonObject(with: credential.data) as? [String: Any]
         guard let token = (raw?["tokens"] as? [String: Any])?["access_token"] as? String else { throw GatewayConfigurationError.credentials }
-        let parts = token.split(separator: ".")
-        guard parts.count == 3 else { throw GatewayConfigurationError.credentials }
-        var payload = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
-        guard let data = Data(base64Encoded: payload), let claims = try JSONSerialization.jsonObject(with: data) as? [String: Any], let exp = claims["exp"] as? Double else { throw GatewayConfigurationError.credentials }
+        guard let exp = JWTClaims.decode(token)?["exp"] as? Double else { throw GatewayConfigurationError.credentials }
         self.id = id; self.accountID = credential.accountID; self.access = token; self.expires = exp
         self.available = available; self.reset = reset
     }

@@ -20,17 +20,18 @@ import AccountCore
     func selection(accounts: [AccountSlot]) -> DesktopSelection? {
         DesktopSelection.live(desktopAccountID: desktopAccountID(), receipt: receipt, accounts: accounts)
     }
-    private var cachedDesktop: (stamp: [String], accountID: String?)?
+    private var cachedDesktop: (stamp: [String], accountID: String?, email: String?)?
+    func desktopAccountID() -> String? { desktopLogin().accountID }
     /// Views ask for this on every render: re-parse auth.json only after it changes on disk.
-    func desktopAccountID() -> String? {
+    func desktopLogin() -> (accountID: String?, email: String?) {
         let url = home.appendingPathComponent("auth.json")
         guard url.standardizedFileURL.path == url.resolvingSymlinksInPath().path,
-              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { cachedDesktop = nil; return nil }
+              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { cachedDesktop = nil; return (nil, nil) }
         let stamp = [attributes[.systemFileNumber], attributes[.size], (attributes[.modificationDate] as? Date)?.timeIntervalSince1970].map { "\($0 ?? "-")" }
-        if let cachedDesktop, cachedDesktop.stamp == stamp { return cachedDesktop.accountID }
-        let accountID = (try? Data(contentsOf: url)).flatMap { try? DesktopCredential($0).accountID }
-        cachedDesktop = (stamp, accountID)
-        return accountID
+        if let cachedDesktop, cachedDesktop.stamp == stamp { return (cachedDesktop.accountID, cachedDesktop.email) }
+        let credential = (try? Data(contentsOf: url)).flatMap { try? DesktopCredential($0) }
+        cachedDesktop = (stamp, credential?.accountID, credential?.email)
+        return (credential?.accountID, credential?.email)
     }
     init(root: URL) { self.root = root }
 

@@ -203,8 +203,12 @@ struct GeneralSettings: View {
                 Toggle("自动账号路由", isOn: Binding(get: { store.gatewayEnabled }, set: { store.setGatewayEnabled($0) }))
                     .toggleStyle(.switch).controlSize(.mini).labelsHidden().tint(Color(red: 0.1, green: 0.55, blue: 0.45))
             }.padding(.vertical, 9)
-            Text(store.gatewayCaption).font(.system(size: 10)).foregroundStyle(.white.opacity(0.65)).fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, store.gatewayEnabled ? 4 : 10)
+            if store.gatewayEnabled || store.routingSetup == .ready {
+                Text(store.gatewayCaption).font(.system(size: 10)).foregroundStyle(.white.opacity(0.65)).fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, store.gatewayEnabled ? 4 : 10)
+            } else {
+                RoutingSetupSteps(store: store).padding(.bottom, 10)
+            }
             if store.gatewayEnabled {
                 Divider().overlay(Color.white.opacity(0.12))
                 HStack {
@@ -216,7 +220,7 @@ struct GeneralSettings: View {
                     }.pickerStyle(.menu).labelsHidden().fixedSize()
                 }.padding(.vertical, 6)
                 if !store.gatewayReady {
-                    Button("重试启动网关") { store.setGatewayEnabled(true, confirm: false) }.controlSize(.small).padding(.bottom, 8)
+                    Button("重试启动网关") { store.setGatewayEnabled(true) }.controlSize(.small).padding(.bottom, 8)
                 }
             }
         }
