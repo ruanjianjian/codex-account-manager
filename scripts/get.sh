@@ -41,6 +41,9 @@ use_system_proxy() {
 (( $(sw_vers -productVersion | cut -d. -f1) >= 14 )) || fail "需要 macOS 14 或更新版本。"
 
 use_system_proxy
+# Conversations Codex already has open keep the gateway address they loaded; only a first setup needs a restart.
+routing_before=""
+grep -q 'openai_base_url.*127\.0\.0\.1' "$HOME/.codex/config.toml" 2>/dev/null && routing_before=1
 tag="${CODEX_ACCOUNTS_VERSION:-$LATEST}"
 base="${CODEX_ACCOUNTS_BASE_URL:-https://github.com/$REPO/releases/download/${tag}}"
 zip="Codex-Accounts-${tag}-macos-arm64.zip"
@@ -77,14 +80,22 @@ fi
 envs=()
 [[ -n "${CODEX_ACCOUNTS_DATA_DIR:-}" ]] && envs=(--env "CODEX_ACCOUNTS_DATA_DIR=$CODEX_ACCOUNTS_DATA_DIR")
 open ${envs[@]+"${envs[@]}"} "$DEST/$APP_NAME" --args --setup-routing
-say "已安装 ${tag}。管家正在自动设置：登录凭据改存本机私有目录（与 Codex 默认方式一致，文件不加密）、连接 Codex 桌面账号、开启路由…"
+if [[ -n "$routing_before" ]]; then
+  say "已安装 ${tag}，管家正在重新接管路由…"
+else
+  say "已安装 ${tag}。管家正在自动设置：登录凭据改存本机私有目录（与 Codex 默认方式一致，文件不加密）、连接 Codex 桌面账号、开启路由…"
+fi
 
 for _ in $(seq 1 45); do
   grep -q 'openai_base_url.*127\.0\.0\.1' "$HOME/.codex/config.toml" 2>/dev/null && break
   sleep 1
 done
 if grep -q 'openai_base_url.*127\.0\.0\.1' "$HOME/.codex/config.toml" 2>/dev/null; then
-  say "完成：自动路由已开启。请重启一次 Codex，已打开的会话也会经过路由。"
+  if [[ -n "$routing_before" ]]; then
+    say "完成：已更新到 ${tag}，自动路由保持开启，不用重启 Codex。"
+  else
+    say "完成：自动路由已开启。新开的 Codex 会话直接生效；已经开着的会话重启一次 Codex 后也会经过路由。以后更新不用再重启。"
+  fi
 else
   say "管家已打开，但路由还没开启：如果 Codex 桌面还没登录，登录后管家会自动完成；其他情况请看管家设置里的「自动账号路由」。"
 fi
