@@ -25,4 +25,4 @@ jobs:
       - name: Build app
         run: ./scripts/build.sh
       - name: Verify signing
-        run: codesign --verify --deep --strict 'dist/Codex Accounts Beta.app'
+        run: codesign --verify --deep --strict 'dist/Tibot.app'
