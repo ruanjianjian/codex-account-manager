@@ -24,6 +24,10 @@ struct EmbeddedWidgetView: View {
                     Link(destination: alert.url) {
                         Label(alert.text, systemImage: "bolt.fill").font(.system(size: 10, weight: .semibold)).lineLimit(1)
                     }.foregroundStyle(Color(red: 0.85, green: 0.38, blue: 0.05)).help("打开 Tibo 原帖")
+                } else if !store.gatewayEnabled && store.routingSetup != .ready && !store.preview {
+                    Button { present(.settings) } label: {
+                        Text("自动路由还差 \(store.routingSetup.remaining) 步 ›").font(.system(size: 10, weight: .semibold))
+                    }.foregroundStyle(Color(red: 0, green: 0.46, blue: 0.53)).help("打开设置完成自动路由")
                 } else {
                     Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).allowsHitTesting(false)
                 }
