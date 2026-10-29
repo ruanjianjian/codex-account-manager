@@ -15,14 +15,15 @@ final class RoutingSetupTests: XCTestCase {
         XCTAssertFalse(RoutingSetup.shouldEnable(.fileStorage, enabled: false, userChoice: nil))
         XCTAssertFalse(RoutingSetup.shouldEnable(ready, enabled: true, userChoice: nil))
     }
-    func testDesktopEmailComesFromTheIDToken() throws {
+    func testDesktopEmailAndNameComeFromTheIDToken() throws {
         func part(_ object: [String: Any]) -> String {
             try! JSONSerialization.data(withJSONObject: object).base64EncodedString()
                 .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
         }
-        let idToken = [part(["alg": "none"]), part(["email": "me@example.com"]), "sig"].joined(separator: ".")
+        let idToken = [part(["alg": "none"]), part(["email": "me@example.com", "name": " Ada Lovelace "]), "sig"].joined(separator: ".")
         let auth = try JSONSerialization.data(withJSONObject: ["tokens": ["account_id": "a", "access_token": "x", "refresh_token": "y", "id_token": idToken]])
         XCTAssertEqual(try DesktopCredential(auth).email, "me@example.com")
+        XCTAssertEqual(try DesktopCredential(auth).name, "Ada Lovelace", "the name Codex shows becomes the card title")
         let noToken = try JSONSerialization.data(withJSONObject: ["tokens": ["account_id": "a", "access_token": "x", "refresh_token": "y"]])
         XCTAssertNil(try DesktopCredential(noToken).email)
     }

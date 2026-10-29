@@ -345,6 +345,16 @@ enum SlotStatus: Equatable {
         for id in affected { clients[id]?.stop(); clients.removeValue(forKey: id) }
         desktopSlotSeen = current
     }
+    /// The user name Codex shows, from the account's own login: the desktop's for the desktop account,
+    /// the stored file otherwise (keychain storage has no file, so the card keeps the email).
+    private func codexName(_ id: String) -> String? {
+        let url = desktopSelection?.slotID == id ? sharedDesktop.home.appendingPathComponent("auth.json")
+                                                 : root.appendingPathComponent("accounts/\(id)/auth.json")
+        guard url.standardizedFileURL == url.resolvingSymlinksInPath(), let data = try? Data(contentsOf: url),
+              let credential = try? DesktopCredential(data, expected: slot(id)?.expectedAccountID),
+              let name = credential.name, !name.isEmpty else { return nil }
+        return name
+    }
     private func verifySharedIdentity(_ id: String) throws {
         guard desktopSelection?.slotID == id else { return }
         guard let expected = slot(id)?.expectedAccountID,
@@ -467,6 +477,7 @@ enum SlotStatus: Equatable {
             saved.accounts[i].snapshot = snapshot
             saved.accounts[i].expectedEmail = identity.email
             saved.accounts[i].expectedAccountID = rates.accountId ?? saved.accounts[i].expectedAccountID
+            if let name = codexName(id) { saved.accounts[i].codexName = String(name.prefix(128)) }
             status[id] = .connected; failures[id] = 0
             Task { await syncUsage(id) }
             nextPoll[id] = Date().addingTimeInterval(60)
