@@ -1,5 +1,13 @@
 # Tibot
 
+**交给 agent 安装**：把下面这句话发给 Claude Code、Codex 等 agent，它会自己装好；已经装过的会更新到最新版，账号和登录都保留。
+
+```text
+请帮我在这台 Mac 上安装或更新 Tibot（开源的 Codex 多账号菜单栏工具，https://github.com/ruanjianjian/codex-account-manager）：
+你自己在终端运行 curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/main/scripts/get.sh | bash（可以先读一遍脚本：它只装进 ~/Applications，会校验 SHA-256，不需要 sudo），
+跑完把最后一行提示原样告诉我（要不要重启 Codex、要不要先登录 Codex 桌面，它都会说）；连不上 GitHub 就让我打开代理软件的「系统代理」后重跑，不要用 sudo 或绕过 macOS 的安全检查，其他报错也原样告诉我。
+```
+
 A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 工具：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
 **测试版 v0.4.9-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
