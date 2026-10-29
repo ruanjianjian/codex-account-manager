@@ -1,6 +1,6 @@
 # Codex Accounts local gateway
 
-Codex-only HTTP/SSE routing helper, implemented in Go with klauspost/compress for native zstd requests. Design inspired by [yetone/Magpie](https://github.com/yetone/magpie) (MIT): account pools, session affinity and fallback before content is emitted. This helper is independently implemented; it does not vendor Magpie source or its multi-provider desktop integration.
+Codex-only HTTP/SSE routing helper, implemented in Go with klauspost/compress for native zstd requests. It pools the connected accounts, keeps each session on the account that served it and falls back to another account before any content is emitted.
 
 The app exports short-lived access tokens only to a 0600 pool file within its private 0700 directory. OAuth refresh tokens stay with the existing credential owner. The helper never calls Keychain, discovers other applications' accounts, refreshes OAuth tokens, edits Codex files or consumes reset credits.
 

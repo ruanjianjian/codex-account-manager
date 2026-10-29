@@ -18,6 +18,17 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 独立社区工具，与 OpenAI、X 无隶属或背书关系。所有账号都由使用者自行登录；不附带账号、API Key、Cookie 或任何个人登录数据。
 
+## 遇到问题
+
+**Codex 报 `502 Bad Gateway: Unknown error`（地址是 127.0.0.1:18456）**：网关连不上 ChatGPT，常见于需要代理才能上 ChatGPT 的网络。v0.4.8 起网关和 Codex 一样走这台 Mac 的代理，重跑上面的一行安装命令更新即可；不跑的话，空闲时最晚约 6 小时也会自动更新。账号、登录和路由都保留，不用重启 Codex，也不用重新授权。
+
+代理需要满足其中一种：
+
+- 设成 macOS 的系统代理，即「系统设置 → 网络 → 代理」里的 HTTPS 或 SOCKS 代理。Clash 等代理软件打开「系统代理」就是这种。
+- 代理软件用 TUN / 增强模式接管全部流量，这时一般不需要额外设置。
+
+暂不支持「自动代理配置（PAC）」。只在终端里 `export https_proxy` 对 Tibot 不生效，因为 Tibot 不是从终端启动的。
+
 ## 能做什么
 
 - 无限数量的账号卡片：官方额度窗口、重置时间、banked reset 数量与到期信息。
@@ -40,7 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 **使用期间保持 Tibot 运行。** 私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
 
-这版借鉴 Magpie 的账号池、会话固定和失败接替设计，使用独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress），并未复制其源码或完整兼容层。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放；加密历史及压缩状态依赖原账号，不能任意跨账号续接，会话账号绑定会在本机保存，网关重启后继续使用。原账号额度不足或客户端在发请求前拦截时，仍会报错；不能承诺带加密历史的旧会话任意跨账号接替。原生云端/远程功能尚未完整验收。
+网关是独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress）。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放；加密历史及压缩状态依赖原账号，不能任意跨账号续接，会话账号绑定会在本机保存，网关重启后继续使用。原账号额度不足或客户端在发请求前拦截时，仍会报错；不能承诺带加密历史的旧会话任意跨账号接替。原生云端/远程功能尚未完整验收。
 
 网关连 ChatGPT 时和 Codex 一样走这台 Mac 的代理（先看 `https_proxy` 等环境变量，再看系统设置里的 HTTPS / SOCKS 代理，每 30 秒重读；自动代理 PAC 不支持），需要代理才能上 ChatGPT 的网络也能用。网关只监听本机，使用独立随机密钥；只导出短期 access token，沿用原采集进程管理 OAuth 刷新。网关凭据及配置备份位于数据目录 `gateway/`，禁止上传。详见 [网关说明](Gateway/README.md) 与 [验证记录](docs/VALIDATION.md)。
 
@@ -117,17 +128,15 @@ Tibo 预告重置时发系统通知（点开即原帖），时间只取帖子原
 
 详见 [PRIVACY.md](PRIVACY.md)、[SECURITY.md](SECURITY.md) 和 [测试版验证记录](docs/VALIDATION.md)。请勿在 Issue 上传账户目录、Cookie、Key、OAuth 回调链接或未经脱敏的截图。
 
-账号/额度读取使用官方 Codex app-server 的实验协议，不保证所有套餐、CLI 版本或未来接口兼容。额度查询本身不发起模型推理，也不代用重置券。开启路由后，模型请求会自动选择账号；关闭路由时，主动切号仍会重启默认 Codex 桌面。实际额度以官方返回为准。
+账号/额度读取使用官方 Codex app-server 的实验协议，不保证所有套餐、CLI 版本或未来接口兼容。额度查询本身不发起模型推理，也不代用重置券。开启路由后，模型请求会自动选择账号。实际额度以官方返回为准。
 
 ## 卸载
 
-先在公开版设置中关闭「自动账号路由」并重启 Codex，再关闭「登录 Mac 时启动」，按需从账号菜单移除账号连接，然后退出并将 **Tibots Beta.app** 移到废纸篓。删除应用本身不会删除登录和缓存。如需清除，使用设置里的「打开本机数据目录」核对公开版目录后手动删除；X 网站数据由系统 WebKit 存储，应用重装后可能仍保留。不要删除其他客户端的目录或钥匙串条目。
+先在公开版设置中关闭「自动账号路由」并重启 Codex，再关闭「登录 Mac 时启动」，按需从账号菜单移除账号连接，然后退出并将 **Tibot.app** 移到废纸篓。删除应用本身不会删除登录和缓存。如需清除，使用设置里的「打开本机数据目录」核对公开版目录后手动删除；X 网站数据由系统 WebKit 存储，应用重装后可能仍保留。不要删除其他客户端的目录或钥匙串条目。
 
-## 致谢与设计参考
+## 第三方组件
 
-感谢 [yetone](https://github.com/yetone) 的开源项目 [Magpie](https://github.com/yetone/magpie)。本机网关与多账号自动路由借鉴了它的账号池、会话固定、输出前失败接替设计。
-
-当前网关为独立实现，没有复制或打包 Magpie 源码，第三方压缩库许可见 Gateway/THIRD-PARTY-NOTICES.txt；仅实现本项目需要的 Codex HTTP/SSE 路由，不能视为完整的 Magpie 移植。设计调研基于 [6e080ca](https://github.com/yetone/magpie/tree/6e080ca0440ebe8d75b8eedd5bc78dd508542bed)。Magpie 使用 [MIT 许可证](https://github.com/yetone/magpie/blob/6e080ca0440ebe8d75b8eedd5bc78dd508542bed/LICENSE)，本项目独立开发与维护。
+网关的压缩协议使用 [klauspost/compress](https://github.com/klauspost/compress)，许可见 `Gateway/THIRD-PARTY-NOTICES.txt`。
 
 ## 贡献
 
@@ -139,4 +148,4 @@ Tibo 预告重置时发系统通知（点开即原帖），时间只取帖子原
 
 ### 实时路由图
 
-开启自动路由后，组件顶部会显示 Codex → 本机网关 → 账号的实时流向。活动请求以光点和账号高亮展示，支持并发、完成和换路计数，点击标题可收起。无请求时停止动画；遵循 macOS 减少动态效果设置。统计只覆盖本次 Tibot 启动期间。展示结构参考 [Magpie](https://github.com/yetone/magpie)，使用 SwiftUI 独立实现。
+开启自动路由后，组件顶部会显示 Codex → 本机网关 → 账号的实时流向。活动请求以光点和账号高亮展示，支持并发、完成和换路计数，点击标题可收起。无请求时停止动画；遵循 macOS 减少动态效果设置。统计只覆盖本次 Tibot 启动期间。

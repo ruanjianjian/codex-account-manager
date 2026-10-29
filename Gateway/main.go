@@ -1,4 +1,4 @@
-// Codex Accounts gateway. Routing design inspired by yetone/magpie (MIT).
+// Tibot's local gateway: routes Codex requests across the connected accounts.
 // Independently implemented, Codex-only; no upstream source is vendored.
 package main
 

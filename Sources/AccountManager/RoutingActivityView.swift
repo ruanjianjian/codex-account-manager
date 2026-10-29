@@ -1,7 +1,7 @@
 import SwiftUI
 import AccountCore
 
-/// Original native rendering; flow-map design inspired by Magpie, drawn as pixel art:
+/// Flow map of routed requests, drawn as pixel art:
 /// each request is a pixel rocket with a flickering exhaust that explodes on arrival.
 struct RoutingActivityView: View {
     @ObservedObject var store: AppStore
