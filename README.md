@@ -10,7 +10,7 @@
 
 A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 工具：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
-**测试版 v0.4.9-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+**测试版 v0.4.10-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
 
 ## 一行安装
 
@@ -37,6 +37,8 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 暂不支持「自动代理配置（PAC）」。只在终端里 `export https_proxy` 对 Tibot 不生效，因为 Tibot 不是从终端启动的。
 
+**额度用完的账号上的旧会话报错、不换账号**：0.4.10 以前，带加密历史的旧会话只能留在原账号。0.4.10 起原账号不可用时会换到其他有额度的账号继续，重跑一行安装命令更新即可。
+
 ## 能做什么
 
 - 无限数量的账号卡片：官方额度窗口、重置时间、banked reset 数量与到期信息。
@@ -59,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 **使用期间保持 Tibot 运行。** 私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
 
-网关是独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress）。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放；加密历史及压缩状态依赖原账号，不能任意跨账号续接，会话账号绑定会在本机保存，网关重启后继续使用。原账号额度不足或客户端在发请求前拦截时，仍会报错；不能承诺带加密历史的旧会话任意跨账号接替。原生云端/远程功能尚未完整验收。
+网关是独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress）。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放。会话先留在第一次回答它的账号上，保住提示缓存；绑定保存在本机，网关重启后继续使用。这个账号额度用完、冷却或登录过期时，会话连同加密历史和压缩内容一起换到其他有额度的账号继续，换过去的第一次没有缓存，会多用一些额度。客户端在发请求前自己拦截时仍会报错。原生云端/远程功能尚未完整验收。
 
 网关连 ChatGPT 时和 Codex 一样走这台 Mac 的代理（先看 `https_proxy` 等环境变量，再看系统设置里的 HTTPS / SOCKS 代理，每 30 秒重读；自动代理 PAC 不支持），需要代理才能上 ChatGPT 的网络也能用。网关只监听本机，使用独立随机密钥；只导出短期 access token，沿用原采集进程管理 OAuth 刷新。网关凭据及配置备份位于数据目录 `gateway/`，禁止上传。详见 [网关说明](Gateway/README.md) 与 [验证记录](docs/VALIDATION.md)。
 
@@ -76,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 ## 手动安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.9-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.10-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 App 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。装了 Codex 桌面（ChatGPT App）就自带 CLI，本版用其内置 CLI 0.165 验证；旧版 CLI 可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
