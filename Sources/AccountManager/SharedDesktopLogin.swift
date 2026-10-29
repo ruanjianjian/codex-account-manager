@@ -48,6 +48,10 @@ import AccountCore
         }
         return data
     }
+    /// The login the Codex CLI kept in the Keychain for a home: the private build's homes, on import.
+    func keychainLogin(home: URL) -> Data? {
+        try? readSecret(service: "Codex Auth", account: SharedDesktopPlan.keyringAccount(home: home))
+    }
     private func sourceKey(_ id: String) throws -> String {
         SharedDesktopPlan.keyringAccount(home: try DesktopLaunchPlan(root: root, accountID: id).home)
     }

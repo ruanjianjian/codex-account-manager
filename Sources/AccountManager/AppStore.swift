@@ -169,9 +169,10 @@ enum SlotStatus: Equatable {
         } }
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.tick() } })
         desktopSlotSeen = desktopSelection?.slotID
+        if !waitForPrivateBuild { importFromPrivateBuild() }
         setupGateway()
         if CommandLine.arguments.contains("--setup-routing") { installerSetup = true }
-        continueInstallerSetup()
+        if !waitForPrivateBuild { continueInstallerSetup() }
         Task { await refreshSequentially() }
     }
     private func setupGateway() {
@@ -507,8 +508,11 @@ enum SlotStatus: Equatable {
                 fallBackToDirect("Codex 当前登录的账号未连接到管家")
             } else { do { try updateGatewayPool() } catch { gatewayCaption = error.localizedDescription } }
         }
-        continueInstallerSetup()
-        enableRoutingWhenReady()
+        if !waitForPrivateBuild {
+            importFromPrivateBuild()
+            continueInstallerSetup()
+            enableRoutingWhenReady()
+        }
         checkResetAnnouncements()
         retryResetRefresh()
         if let started = loginStarted, now.timeIntervalSince(started) > 600 {
@@ -687,6 +691,60 @@ enum SlotStatus: Equatable {
         } catch {
             banner = "迁移未完成，仍使用原存储。" + ((error as? DesktopSwitchFailure)?.localizedDescription ?? "请检查钥匙串授权或文件权限后重试。")
             return false
+        }
+    }
+    /// The private build's data folder (CODEX_ACCOUNTS_IMPORT_FROM points elsewhere for testing).
+    private var privateRoot: URL {
+        if let dir = ProcessInfo.processInfo.environment["CODEX_ACCOUNTS_IMPORT_FROM"], dir.hasPrefix("/") { return URL(fileURLWithPath: dir, isDirectory: true) }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/\(PrivateBuildImport.folderName)")
+    }
+    /// The private build holds this lock while it runs.
+    private var privateBuildRunning: Bool {
+        let fd = open(privateRoot.appendingPathComponent("app.lock").path, O_RDWR | O_NOFOLLOW)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return true }
+        flock(fd, LOCK_UN); return false
+    }
+    private var privateImportHinted = false
+    private var privateImportFailed = false
+    /// While the private build runs, setup waits: it would fight over Codex's configuration, and two
+    /// programs refreshing one login sign each other out.
+    private var waitForPrivateBuild: Bool {
+        guard FileManager.default.fileExists(atPath: privateRoot.appendingPathComponent("state.json").path), privateBuildRunning else { return false }
+        if !privateImportHinted {
+            privateImportHinted = true
+            banner = "检测到私人版正在运行。退出私人版后，会自动导入它的账号和登录、开启路由，不用重新授权。"
+        }
+        return true
+    }
+    /// Once, the private build's accounts and logins come over (any not here yet), so nobody signs in again.
+    private func importFromPrivateBuild() {
+        guard !preview, persistenceEnabled, loginSlotID == nil, !privateImportFailed,
+              !UserDefaults.standard.bool(forKey: "import.privateBuild"),
+              FileManager.default.fileExists(atPath: privateRoot.appendingPathComponent("state.json").path) else { return }
+        do {
+            let desktop = (try? Data(contentsOf: sharedDesktop.home.appendingPathComponent("auth.json"))).flatMap { try? DesktopCredential($0) }
+            guard let plan = try PrivateBuildImport.plan(privateRoot: privateRoot, desktop: desktop,
+                                                          keychain: { [sharedDesktop] home in sharedDesktop.keychainLogin(home: home) }) else { return }
+            let known = Set(saved.accounts.compactMap(\.expectedAccountID)), ids = Set(saved.accounts.map(\.id))
+            let added = plan.accounts.filter { !known.contains($0.expectedAccountID ?? "") && !ids.contains($0.id) }
+            let credentials = plan.credentials.filter { item in added.contains { $0.id == item.0 } }
+            if !added.isEmpty {
+                if usesFileCredentials { for (id, credential) in credentials { try sharedDesktop.fileStore.write(credential, id: id) } }
+                else { try sharedDesktop.fileStore.activate(credentials) }
+                saved.accounts += added
+                for slot in added { status[slot.id] = .disconnected }
+                record("已从私人版导入 \(added.count) 个账号和登录。")
+                banner = "已从私人版导入 \(added.count) 个账号和登录，不用重新授权。之后只用这个版本，不要再打开私人版，免得两边互相顶掉登录。"
+                    + (plan.skipped > 0 ? "另有 \(plan.skipped) 个账号读不到登录，需要重新连接。" : "")
+                persist(); onChange?(); onDesktopChange?()
+                Task { await refreshSequentially(force: true) }
+            }
+            UserDefaults.standard.set(true, forKey: "import.privateBuild")
+        } catch {
+            privateImportFailed = true
+            banner = "私人版账号没能导入，下次打开会再试：" + error.localizedDescription
         }
     }
     /// Set by the one-line installer (`--setup-routing`), whose user agreed to file storage. The first-run
