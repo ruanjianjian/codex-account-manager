@@ -133,6 +133,9 @@ struct GeneralSettings: View {
                         row("额度变化通知") { switchToggle(Binding(get: { store.saved.notificationsEnabled }, set: store.setNotifications)) }
                         Divider()
                         row("登录 Mac 时启动") { switchToggle(Binding(get: { store.loginAtLaunch }, set: store.setLoginAtLaunch)) }
+                        Divider()
+                        row("自动更新") { switchToggle(Binding(get: { store.autoUpdate }, set: store.setAutoUpdate)) }
+                        if store.autoUpdate && !store.updateCaption.isEmpty { note(store.updateCaption).padding(.bottom, 8) }
                     }
                     caption("重置提醒")
                     card {
