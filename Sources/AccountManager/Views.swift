@@ -264,7 +264,7 @@ struct AccountAdder: View {
             Picker("Chrome Profile", selection: $profile) {
                 ForEach(store.profiles) { Text($0.name).tag($0.id) }
             }
-            TextField("Codex 名称（可留空）", text: $alias)
+            TextField("自定义名称（可留空，默认显示 Codex 用户名）", text: $alias)
             Text("登录后自动读取身份与额度；填写名称后显示在看板。多个账号可共用Chrome Profile，数量不设上限。")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {

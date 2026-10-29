@@ -44,8 +44,9 @@ public enum JWTClaims {
 public struct DesktopCredential {
     public let data: Data
     public let accountID: String
-    /// From the id_token, to tell the user which account the desktop is signed in to.
+    /// From the id_token, to show the user which account this is: the email and the name Codex shows.
     public let email: String?
+    public let name: String?
     public init(_ data: Data, expected: String? = nil) throws {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               object["OPENAI_API_KEY"] == nil || object["OPENAI_API_KEY"] is NSNull,
@@ -55,7 +56,9 @@ public struct DesktopCredential {
               let refresh = tokens["refresh_token"] as? String, !refresh.isEmpty,
               expected == nil || id == expected else { throw DesktopSwitchFailure.identity }
         self.data = data; accountID = id
-        email = (tokens["id_token"] as? String).flatMap { JWTClaims.decode($0)?["email"] as? String }
+        let claims = (tokens["id_token"] as? String).flatMap(JWTClaims.decode)
+        email = claims?["email"] as? String
+        name = (claims?["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
