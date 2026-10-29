@@ -11,7 +11,9 @@ struct RoutingSetupSteps: View {
         VStack(alignment: .leading, spacing: 7) {
             step(1, "连接 Codex 桌面账号", done: setup == .ready, detail: setup == .ready ? desktopName : nil) {
                 switch setup {
-                case .fileStorage: Text("正在准备…").foregroundStyle(.white.opacity(0.55))
+                case .fileStorage:
+                    if store.storageMoveFailed { Button("重试") { store.retryFileStorage() }.disabled(store.preview) }
+                    else { Text("正在准备…").foregroundStyle(.white.opacity(0.55)) }
                 case .desktopLogin: Text("先在 Codex 登录").foregroundStyle(.white.opacity(0.55))
                 case .desktopAccount(let email):
                     Button(email.map { "连接 " + Presentation.maskedEmail($0) } ?? "连接") { store.connectDesktopAccount() }
