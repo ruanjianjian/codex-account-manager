@@ -170,6 +170,8 @@ enum SlotStatus: Equatable {
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.tick() } })
         desktopSlotSeen = desktopSelection?.slotID
         setupGateway()
+        if CommandLine.arguments.contains("--setup-routing") { installerSetup = true }
+        continueInstallerSetup()
         Task { await refreshSequentially() }
     }
     private func setupGateway() {
@@ -494,6 +496,7 @@ enum SlotStatus: Equatable {
                 fallBackToDirect("Codex 当前登录的账号未连接到管家")
             } else { do { try updateGatewayPool() } catch { gatewayCaption = error.localizedDescription } }
         }
+        continueInstallerSetup()
         enableRoutingWhenReady()
         checkResetAnnouncements()
         retryResetRefresh()
@@ -636,35 +639,71 @@ enum SlotStatus: Equatable {
         do { try openChrome(for: id, url: URL(string: "https://chatgpt.com/codex/settings/usage")!) }
         catch { banner = safeError(error) }
     }
+    private var canMigrateCredentials: Bool {
+        !usesFileCredentials && !migratingCredentials && launchingDesktop.isEmpty && loginSlotID == nil && canConnect
+    }
     func enableFileCredentials() {
-        guard !usesFileCredentials, !migratingCredentials, launchingDesktop.isEmpty, loginSlotID == nil, canConnect else { return }
+        guard canMigrateCredentials else { return }
         let alert = NSAlert()
         alert.messageText = "改用本机文件保存登录？"
         alert.informativeText = "自动路由需要这个模式。登录凭据保存在本机私有目录的 auth.json，与 Codex 默认方式一致；文件不加密，同一 macOS 用户下的程序可能读取。原钥匙串记录保留。"
         alert.addButton(withTitle: "同意并迁移")
         alert.addButton(withTitle: "保留钥匙串")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { await migrateCredentialsToFiles() }
+    }
+    @discardableResult private func migrateCredentialsToFiles() async -> Bool {
+        guard canMigrateCredentials else { return usesFileCredentials }
         migratingCredentials = true; launchingDesktop.insert("credential-migration")
-        Task {
-            defer {
-                self.migratingCredentials = false; self.launchingDesktop.remove("credential-migration")
-                self.nextPoll.removeAll(); self.nextUsagePoll.removeAll(); self.onChange?()
+        defer {
+            migratingCredentials = false; launchingDesktop.remove("credential-migration")
+            nextPoll.removeAll(); nextUsagePoll.removeAll(); onChange?()
+        }
+        do {
+            for _ in 0..<650 {
+                if busy.isEmpty && usageLoading.isEmpty { break }
+                try await Task.sleep(for: .milliseconds(100))
             }
-            do {
-                for _ in 0..<650 {
-                    if self.busy.isEmpty && self.usageLoading.isEmpty { break }
-                    try await Task.sleep(for: .milliseconds(100))
-                }
-                guard self.busy.isEmpty, self.usageLoading.isEmpty else { throw DesktopSwitchFailure.collectorsBusy }
-                for client in self.clients.values {
-                    guard await client.stopAndWait() else { throw DesktopSwitchFailure.collectorStop }
-                }
-                self.clients.removeAll()
-                try self.sharedDesktop.migrateToFiles(accounts: self.saved.accounts, legacy: self.accountDesktop)
-                for slot in self.saved.accounts { self.resumeCollector(slot.id) }
-                self.banner = "已改用本地文件保存登录，原钥匙串记录保留。当前 Codex 未重启。"
-            } catch {
-                self.banner = "迁移未完成，仍使用原存储。" + ((error as? DesktopSwitchFailure)?.localizedDescription ?? "请检查钥匙串授权或文件权限后重试。")
+            guard busy.isEmpty, usageLoading.isEmpty else { throw DesktopSwitchFailure.collectorsBusy }
+            for client in clients.values {
+                guard await client.stopAndWait() else { throw DesktopSwitchFailure.collectorStop }
+            }
+            clients.removeAll()
+            try sharedDesktop.migrateToFiles(accounts: saved.accounts, legacy: accountDesktop)
+            for slot in saved.accounts { resumeCollector(slot.id) }
+            banner = "已改用本地文件保存登录，原钥匙串记录保留。当前 Codex 未重启。"
+            return true
+        } catch {
+            banner = "迁移未完成，仍使用原存储。" + ((error as? DesktopSwitchFailure)?.localizedDescription ?? "请检查钥匙串授权或文件权限后重试。")
+            return false
+        }
+    }
+    /// Set by the one-line installer (`--setup-routing`), whose user agreed to file storage. The first-run
+    /// steps then happen without clicks, including connecting the desktop once the user signs in to Codex.
+    private var installerSetup: Bool {
+        get { UserDefaults.standard.bool(forKey: "setup.installer") }
+        set { UserDefaults.standard.set(newValue, forKey: "setup.installer") }
+    }
+    private var installerMigrationTried = false
+    private var installerLoginHinted = false
+    private func continueInstallerSetup() {
+        guard installerSetup, !preview, persistenceEnabled else { return }
+        switch routingSetup {
+        case .fileStorage:
+            guard !installerMigrationTried else { return }
+            installerMigrationTried = true
+            Task { await migrateCredentialsToFiles() }
+        case .desktopLogin:
+            if !installerLoginHinted { installerLoginHinted = true; banner = "登录 Codex 桌面后，管家会自动连接这个账号并开启路由。" }
+        case .desktopAccount:
+            connectDesktopAccount()
+        case .ready:
+            installerSetup = false
+            // The installer asked for routing, so it also overrides an earlier "off".
+            if !gatewayEnabled { setGatewayEnabled(true) }
+            if gatewayEnabled {
+                banner = "自动路由已设置好。重启一次 Codex，已打开的会话也会经过路由。"
+                record("安装程序完成了自动路由设置。")
             }
         }
     }
