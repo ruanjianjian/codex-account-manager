@@ -10,7 +10,7 @@ public enum ClientFailure: Error, LocalizedError {
         case .invalidResponse: return "服务返回格式无法识别，请更新 Tibot 后重试。"
         case .keychainAccess: return "钥匙串访问未完成，已暂停自动同步。请从此账号菜单点“刷新”手动重试。"
         case .authentication: return "登录需要重新验证，请点“重新连接”。"
-        case .service(let code): return "服务暂不可用（\(code)），已保留登录；稍后重试。若持续失败，请检查网络与钥匙串权限。"
+        case .service(let code): return "服务暂不可用（\(code)），已保留登录；稍后重试。若持续失败，请检查网络。"
         case .fileAccess: return "无法保存本机数据，请检查目录权限。"
         }
     }

@@ -40,6 +40,8 @@ enum SlotStatus: Equatable {
     private lazy var gateway = GatewayController(root: root)
     var usesFileCredentials: Bool { sharedDesktop.fileStore.enabled }
     @Published var banner: String?
+    /// Moving logins out of the Keychain failed; the setup card offers a retry.
+    @Published var storageMoveFailed = false
     @Published var now = Date()
     @Published var profiles: [ChromeProfile] = []
     @Published var loginAtLaunch = false
@@ -165,9 +167,13 @@ enum SlotStatus: Equatable {
             status[slot.id] = collectorRetry.paused.contains(slot.id) ? .failure(CollectorRetryPolicy.message) : .disconnected
         }
         if preview { loadPreview(); return }
+        let lastVersion = UserDefaults.standard.string(forKey: "app.version")
+        UserDefaults.standard.set(updater.current, forKey: "app.version")
         if let from = UserDefaults.standard.string(forKey: "update.from") {
             UserDefaults.standard.removeObject(forKey: "update.from")
             if from != updater.current { banner = "已自动更新到 \(updater.current)。"; record("已从 \(from) 自动更新到 \(updater.current)。") }
+        } else if let lastVersion, lastVersion != updater.current {
+            record("已从 \(lastVersion) 更新到 \(updater.current)。")
         }
         if sharedDesktop.interruptedSwitch { banner = "旧版本留下了一次未完成的桌面切换。新版不再改 Codex 登录；如账号不对，请在 Codex 里重新登录。" }
         loadResetMonitor()
@@ -228,8 +234,7 @@ enum SlotStatus: Equatable {
         }
         try? gateway.stop(restore: false)
         gatewayReady = false; gatewayAccount = nil; routingActivity.receive(.init(kind: "stopped"))
-        // Conversations the gateway created on another account carry that account's sealed history.
-        gatewayCaption = wasInstalled ? "\(reason) · 已恢复直连；经网关在其他账号上开的会话需等网关恢复后再继续" : reason
+        gatewayCaption = wasInstalled ? "\(reason) · 已恢复直连，Codex 改用它自己登录的账号" : reason
     }
     /// Only reasons a Codex conversation can cause; local probes (for example a web page) never change the caption.
     private func rejectionCaption(_ event: GatewayActivityEvent) -> String? {
@@ -614,7 +619,7 @@ enum SlotStatus: Equatable {
                 // Some Codex builds cannot write the Keychain when started by another app; the browser sign-in still succeeded.
                 let reason = (params["error"] as? String ?? "").lowercased()
                 let keyring = !usesFileCredentials && ["keyring", "secure storage", "keychain"].contains { reason.contains($0) }
-                status[id] = .failure(keyring ? "登录已完成，但系统钥匙串无法保存。请在“Tibot 设置”改用本地文件存储后重新连接。"
+                status[id] = .failure(keyring ? "登录已完成，但系统钥匙串无法保存。请先在自动路由设置里点「重试」把登录改存本机文件，再重新连接。"
                                               : "登录未完成，请重新连接。已有账号不会退出。")
                 loginQueue.removeAll()
             }
@@ -670,6 +675,7 @@ enum SlotStatus: Equatable {
     }
     /// Logins live in files only, like Codex's own ~/.codex/auth.json. A fresh install starts there; logins an older
     /// version kept in the Keychain move over once (macOS may ask once per item, never again afterwards).
+    func retryFileStorage() { Task { await useFileStorage() } }
     private func useFileStorage() async {
         guard !preview, persistenceEnabled, !usesFileCredentials else { return }
         if saved.accounts.isEmpty { try? sharedDesktop.fileStore.activate([]); return }
@@ -695,11 +701,13 @@ enum SlotStatus: Equatable {
             let unreadable = try sharedDesktop.migrateToFiles(accounts: saved.accounts, legacy: accountDesktop)
             for slot in saved.accounts { resumeCollector(slot.id) }
             for id in unreadable { status[id] = .needsAuth }
+            storageMoveFailed = false
             record("登录已改存本机文件，以后不再访问钥匙串。")
             if !unreadable.isEmpty { banner = "有 \(unreadable.count) 个账号的旧登录没能从钥匙串读出，请重新连接这几个账号。" }
             return true
         } catch {
-            banner = "迁移未完成，仍使用原存储。" + ((error as? DesktopSwitchFailure)?.localizedDescription ?? "请检查钥匙串授权或文件权限后重试。")
+            storageMoveFailed = true
+            banner = "登录没能改存本机文件：" + ((error as? DesktopSwitchFailure)?.localizedDescription ?? "请检查数据目录权限。") + "可在自动路由设置里点「重试」。"
             return false
         }
     }
@@ -826,9 +834,11 @@ enum SlotStatus: Equatable {
             connectDesktopAccount()
         case .ready:
             installerSetup = false
-            // The installer asked for routing, so it also overrides an earlier "off".
-            if !gatewayEnabled { setGatewayEnabled(true) }
-            if gatewayEnabled {
+            // The installer asked for routing, so it also overrides an earlier "off". When routing was already
+            // on, the installer was an update: open conversations keep working without a Codex restart.
+            let wasOn = gatewayEnabled
+            if !wasOn { setGatewayEnabled(true) }
+            if gatewayEnabled && !wasOn {
                 banner = "自动路由已设置好。重启一次 Codex，已打开的会话也会经过路由。"
                 record("安装程序完成了自动路由设置。")
             }
@@ -838,7 +848,7 @@ enum SlotStatus: Equatable {
     func chooseAccount(_ id: String) {
         guard !preview, let selected = slot(id), selected.expectedAccountID != nil else { return }
         if !gatewayEnabled && routingSetup != .ready {
-            banner = "先完成自动路由的设置：" + (routingSetup == .fileStorage ? "改用本机文件存储" : "连接 Codex 桌面正在登录的账号"); return
+            banner = "先完成自动路由的设置：" + (routingSetup == .fileStorage ? "把登录改存本机文件" : "连接 Codex 桌面正在登录的账号"); return
         }
         if !gatewayEnabled {
             let alert = NSAlert(); alert.messageText = "开启自动账号路由？"
