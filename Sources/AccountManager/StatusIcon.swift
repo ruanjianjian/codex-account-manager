@@ -65,7 +65,7 @@ enum StatusIcon {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "Codex Accounts"
+        image.accessibilityDescription = "Tibot"
         return image
     }
 }

@@ -1,20 +1,17 @@
 import SwiftUI
 import AccountCore
 
-/// First-run steps before routing: file storage, then the desktop's own account. Routing then
-/// switches itself on, so there is no third thing to click unless the user had turned it off.
+/// First-run steps before routing: the desktop's own account (logins are always kept in files). Routing then
+/// switches itself on, so there is nothing else to click unless the user had turned it off.
 struct RoutingSetupSteps: View {
     @ObservedObject var store: AppStore
     private let mint = Color(red: 0.55, green: 0.96, blue: 0.78)
     var body: some View {
         let setup = store.routingSetup
         VStack(alignment: .leading, spacing: 7) {
-            step(1, "本机文件存储", done: setup != .fileStorage) {
-                Button("改用") { store.enableFileCredentials() }
-                    .disabled(store.preview || store.migratingCredentials || store.loginSlotID != nil)
-            }
-            step(2, "连接 Codex 桌面账号", done: setup == .ready, detail: setup == .ready ? desktopName : nil) {
+            step(1, "连接 Codex 桌面账号", done: setup == .ready, detail: setup == .ready ? desktopName : nil) {
                 switch setup {
+                case .fileStorage: Text("正在准备…").foregroundStyle(.white.opacity(0.55))
                 case .desktopLogin: Text("先在 Codex 登录").foregroundStyle(.white.opacity(0.55))
                 case .desktopAccount(let email):
                     Button(email.map { "连接 " + Presentation.maskedEmail($0) } ?? "连接") { store.connectDesktopAccount() }
@@ -22,7 +19,7 @@ struct RoutingSetupSteps: View {
                 default: EmptyView()
                 }
             }
-            step(3, "开启路由", done: false) {
+            step(2, "开启路由", done: false) {
                 if setup == .ready { Button("开启") { store.setGatewayEnabled(true) }.disabled(store.preview) }
                 else { Text(store.routingChoice == false ? "完成后点开启" : "完成后自动开启").foregroundStyle(.white.opacity(0.55)) }
             }
@@ -61,7 +58,7 @@ struct RoutingSetupView: View {
             }
             if setup == .ready {
                 HStack {
-                    Text("开启后，Codex 的请求由管家自动挑账号").font(.system(size: 11)).foregroundStyle(.white.opacity(0.75))
+                    Text("开启后，Codex 的请求由 Tibot 自动挑账号").font(.system(size: 11)).foregroundStyle(.white.opacity(0.75))
                     Spacer(minLength: 6)
                     Button("开启") { store.setGatewayEnabled(true) }.buttonStyle(.borderless).controlSize(.small)
                         .tint(Color(red: 0.55, green: 0.96, blue: 0.78)).disabled(store.preview)

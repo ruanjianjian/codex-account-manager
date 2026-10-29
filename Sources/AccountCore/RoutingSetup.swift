@@ -20,8 +20,7 @@ public enum RoutingSetup: Equatable {
     }
     public var remaining: Int {
         switch self {
-        case .fileStorage: return 2
-        case .desktopLogin, .desktopAccount: return 1
+        case .fileStorage, .desktopLogin, .desktopAccount: return 1
         case .ready: return 0
         }
     }

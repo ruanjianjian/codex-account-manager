@@ -65,8 +65,8 @@ import AccountCore
         }
     }
     nonisolated static func reason(_ stderr: String, port: Int) -> String {
-        if stderr.contains("port is already occupied") { return "端口 \(port) 已被占用，可能另一版本的管家仍在运行" }
-        if stderr.contains("local credential registry unavailable") { return "Codex 当前登录未连接到管家，或桌面凭据已过期" }
+        if stderr.contains("port is already occupied") { return "端口 \(port) 已被占用，可能另一版本的 Tibot 仍在运行" }
+        if stderr.contains("local credential registry unavailable") { return "Codex 当前登录未连接到 Tibot，或桌面凭据已过期" }
         if stderr.contains("configuration unavailable") { return "网关账号池不可用" }
         return "网关进程意外退出"
     }

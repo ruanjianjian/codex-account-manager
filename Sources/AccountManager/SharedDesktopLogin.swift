@@ -59,19 +59,21 @@ import AccountCore
         if fileStore.enabled { return try fileStore.read(id, expected: expected) }
         return try DesktopCredential(readSecret(service: "Codex Auth", account: sourceKey(id)), expected: expected)
     }
-    /// Called only following a storage-tradeoff confirmation and collector shutdown.
-    func migrateToFiles(accounts: [AccountSlot], legacy: AccountDesktopLauncher) throws {
+    /// Moves stored logins out of the Keychain into files, once and for good (each item may ask once).
+    /// Returns the accounts whose login could not be read; they need to sign in again.
+    func migrateToFiles(accounts: [AccountSlot], legacy: AccountDesktopLauncher) throws -> [String] {
         guard !fileStore.enabled,
               accounts.allSatisfy({ legacy.running(root: root, id: $0.id) == nil }) else { throw DesktopSwitchFailure.busy }
-        var credentials: [(String, DesktopCredential)] = []
+        var credentials: [(String, DesktopCredential)] = [], unreadable: [String] = []
         for slot in accounts {
             guard let expected = slot.expectedAccountID else { continue }
-            let credential: DesktopCredential
+            let credential: DesktopCredential?
             if selection(accounts: accounts)?.slotID == slot.id {
-                credential = try DesktopCredential(Data(contentsOf: home.appendingPathComponent("auth.json")), expected: expected)
-            } else { credential = try source(slot.id, expected: expected) }
-            credentials.append((slot.id, credential))
+                credential = try? DesktopCredential(Data(contentsOf: home.appendingPathComponent("auth.json")), expected: expected)
+            } else { credential = try? source(slot.id, expected: expected) }
+            if let credential { credentials.append((slot.id, credential)) } else { unreadable.append(slot.id) }
         }
         try fileStore.activate(credentials)
+        return unreadable
     }
 }

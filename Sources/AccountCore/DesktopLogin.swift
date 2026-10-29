@@ -24,7 +24,7 @@ public enum DesktopSwitchFailure: LocalizedError {
         case .persistence: return "登录备份或保存失败。"
         case .busy: return "仍有采集或登录操作进行中，请稍后再试。"
         case .collectorsBusy: return "额度或用量查询尚未结束，请等待同步结束后重试。"
-        case .collectorStop: return "管家的采集进程未能退出，请重新打开管家后重试。"
+        case .collectorStop: return "Tibot 的采集进程未能退出，请重新打开 Tibot 后重试。"
         }
     }
 }
