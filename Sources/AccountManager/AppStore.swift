@@ -235,8 +235,8 @@ enum SlotStatus: Equatable {
     private func rejectionCaption(_ event: GatewayActivityEvent) -> String? {
         let name = event.account.flatMap { slot($0)?.displayName } ?? "原账号"
         switch event.reason {
-        case "sealed_owner_unavailable": return "旧会话含加密历史，只能用 \(name)；它暂不可用，请等额度恢复或新开会话"
-        case "sealed_owner_unknown": return "旧会话的原账号未知，网关未换号转发；请新开会话"
+        case "sealed_owner_unavailable": return "会话接着 \(name) 服务器上保存的回复，只能用它；它暂不可用，请等额度恢复或新开会话"
+        case "sealed_owner_unknown": return "会话接着服务器上保存的回复，原账号未知，网关未换号转发；请新开会话"
         case "no_available_account", "all_accounts_declined": return "没有可用账号；刷新账号或等待额度重置"
         case "unsupported_route": return "Codex 调用了网关尚未支持的接口，已记录到诊断日志"
         default: return nil

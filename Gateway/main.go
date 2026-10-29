@@ -275,23 +275,26 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		id: fmt.Sprintf("%d-%d", time.Now().UnixNano(), requestSequence.Add(1)), session: session,
 	}))
 	defer func() { g.emitRequest(r, event{Kind: "finished"}) }()
-	// Account-bound server state must never be silently stripped to enable fallback.
-	bound := bytes.Contains(body, []byte(`"encrypted_content"`)) || bytes.Contains(body, []byte(`"encrypted_function_args"`)) || len(obj["previous_response_id"]) > 0 || path == "/responses/compact"
-	// A sealed thread the gateway never served is assumed to belong to the account the desktop is
-	// logged in to (old direct threads). Only a successful reply records that owner, so a wrong
-	// guess is not pinned once the desktop is back on the right account.
+	// A stored previous response lives on one account's server; it can only continue there.
+	pinned := len(obj["previous_response_id"]) > 0
+	// Encrypted history (reasoning, compaction) is readable by other accounts too (verified with real
+	// accounts on 2026-10-29), so it only prefers its owner and moves when the owner is unavailable.
+	sealed := pinned || path == "/responses/compact" || bytes.Contains(body, []byte(`"encrypted_content"`)) || bytes.Contains(body, []byte(`"encrypted_function_args"`))
+	// A sealed thread the gateway never served most likely began on the account the desktop is
+	// logged in to (old direct threads), so that account goes first for its prompt cache. Only a
+	// successful reply records the owner, so a wrong guess is not pinned.
 	guess := ""
-	if session != "" {
+	if session != "" && sealed {
 		guess = nativeAccount
 	}
-	candidates, stuck := g.candidates(c, session, bound, guess)
+	candidates, stuck := g.candidates(c, session, pinned, guess)
 	switch {
 	case stuck == "sealed_owner_unknown":
-		reject(409, stuck, "", "This conversation contains account-bound history from an unknown account; it was not sent to another account. Start a new conversation.")
+		reject(409, stuck, "", "This conversation continues a response stored on an unknown account; it was not sent to another account. Start a new conversation.")
 		return
 	case stuck != "":
 		owner := g.owner(session, guess)
-		reject(409, stuck, owner, "This conversation's account-bound history must stay on account "+owner+", which is unavailable now (quota, cooldown or expired login). Wait for it to recover or start a new conversation.")
+		reject(409, stuck, owner, "This conversation continues a response stored on account "+owner+", which is unavailable now (quota, cooldown or expired login). Wait for it to recover or start a new conversation.")
 		return
 	case len(candidates) == 0:
 		reject(503, "no_available_account", "", "No available account. Refresh or reconnect accounts in Codex Accounts.")
@@ -322,6 +325,10 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: res.StatusCode, Session: session})
 			if retryable(res.StatusCode) {
 				g.cool(a.ID, retryAt(res.Header, b))
+				continue
+			}
+			// An account that cannot read this conversation's encrypted history is not at fault; the next one may.
+			if sealed && res.StatusCode == 400 && bytes.Contains(b, []byte("encrypted")) {
 				continue
 			}
 			fail(w, res.StatusCode, "Upstream rejected the request; account "+a.ID+". No retry was made.")
@@ -395,8 +402,8 @@ func retryAt(h http.Header, b []byte) time.Time {
 	return time.Now().Add(time.Duration(seconds * float64(time.Second)))
 }
 
-// Returns the accounts to try in order, or why a sealed conversation cannot be served.
-func (g *gateway) candidates(c config, session string, bound bool, guess string) ([]account, string) {
+// Returns the accounts to try in order, or why a pinned conversation cannot be served.
+func (g *gateway) candidates(c config, session string, pinned bool, guess string) ([]account, string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
@@ -404,11 +411,11 @@ func (g *gateway) candidates(c config, session string, bound bool, guess string)
 	if old.Until.Before(now) {
 		old = binding{}
 	}
-	if old.ID == "" && bound {
+	if old.ID == "" {
 		old.ID = guess
 	}
-	// Without a recorded owner, sealed histories cannot safely be assigned, not even to Preferred.
-	if bound && old.ID == "" {
+	// Without a recorded owner, a stored response cannot be assigned, not even to Preferred.
+	if pinned && old.ID == "" {
 		return nil, "sealed_owner_unknown"
 	}
 	var out []account
@@ -416,8 +423,8 @@ func (g *gateway) candidates(c config, session string, bound bool, guess string)
 		if a.Access == "" || a.Expires <= float64(now.Unix()+30) || g.rest[a.ID].After(now) {
 			continue
 		}
-		// Sealed state stays with its owner, even when another account is preferred or quota looks spent.
-		if bound {
+		// A stored response stays with its owner, even when another account is preferred or quota looks spent.
+		if pinned {
 			if a.ID == old.ID {
 				out = append(out, a)
 			}
@@ -444,7 +451,7 @@ func (g *gateway) candidates(c config, session string, bound bool, guess string)
 		}
 		return out[i].Reset > 0 && (out[j].Reset == 0 || out[i].Reset < out[j].Reset)
 	})
-	if bound && len(out) == 0 {
+	if pinned && len(out) == 0 {
 		return nil, "sealed_owner_unavailable"
 	}
 	return out, ""

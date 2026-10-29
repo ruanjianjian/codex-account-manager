@@ -97,19 +97,59 @@ func TestPreludeFailureRetries(t *testing.T) {
 		t.Fatalf("%d %s", n, w.Body)
 	}
 }
-func TestBoundHistoryCannotMove(t *testing.T) {
+func TestStoredResponseCannotMove(t *testing.T) {
 	n := 0
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { n++; w.WriteHeader(429) }))
 	defer up.Close()
 	g := newGateway(func() (config, error) { return pool(), nil }, up.URL, func(event) {})
-	w := ask(g, `{"input":[{"encrypted_content":"sealed"}]}`)
+	w := ask(g, `{"previous_response_id":"r1","input":[]}`)
 	if w.Code != 409 || n != 0 {
-		t.Fatal("unknown sealed history was forwarded")
+		t.Fatal("stored response with unknown owner was forwarded")
 	}
 	g.remember("test-session", "one")
 	ask(g, `{"previous_response_id":"r1","input":[]}`)
 	if n != 1 {
-		t.Fatalf("bound request tried %d accounts", n)
+		t.Fatalf("pinned request tried %d accounts", n)
+	}
+}
+
+// The colleague's case: a conversation with encrypted history began on an account that has since run
+// out. It continues on another account instead of failing; while the owner is fine it stays there.
+func TestSealedConversationMovesWhenOwnerUnavailable(t *testing.T) {
+	var seen []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("chatgpt-account-id"))
+		if r.Header.Get("chatgpt-account-id") == "acct-one" && strings.HasSuffix(r.URL.Path, "/compact") {
+			w.WriteHeader(429)
+			io.WriteString(w, `{"error":{"type":"usage_limit_reached","resets_in_seconds":3600}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	}))
+	defer up.Close()
+	c := pool()
+	g := newGateway(func() (config, error) { return c, nil }, up.URL, func(event) {})
+	g.remember("test-session", "one")
+	if w := ask(g, `{"input":[{"encrypted_content":"sealed"}]}`); w.Code != 200 || strings.Join(seen, ",") != "acct-one" {
+		t.Fatalf("sealed conversation left an available owner: %d %v", w.Code, seen)
+	}
+	seen = nil
+	c.Accounts[0].Available = false
+	if w := ask(g, `{"input":[{"encrypted_content":"sealed"}]}`); w.Code != 200 || strings.Join(seen, ",") != "acct-two" {
+		t.Fatalf("spent owner blocked its conversation: %d %v", w.Code, seen)
+	}
+	// Quota looked fine but the owner is used up: the same request moves on.
+	seen = nil
+	c.Accounts[0].Available = true
+	g.remember("compacting", "one")
+	r := httptest.NewRequest("POST", "http://127.0.0.1:18455/v1/responses/compact", strings.NewReader(`{"input":[{"encrypted_content":"sealed"}]}`))
+	r.Header.Set("Authorization", "Bearer "+pool().Key)
+	r.Header.Set("session-id", "compacting")
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 200 || strings.Join(seen, ",") != "acct-one,acct-two" {
+		t.Fatalf("used-up owner did not hand over: %d %v", w.Code, seen)
 	}
 }
 func TestLocalAccessAndNoRedirect(t *testing.T) {
@@ -166,7 +206,7 @@ func TestNativeLegacyHistoryAndFastTier(t *testing.T) {
 		io.WriteString(w, good)
 	}))
 	defer up.Close()
-	g := newGateway(func() (config, error) { c := pool(); c.Accounts[1].Available = false; return c, nil }, up.URL, func(event) {})
+	g := newGateway(func() (config, error) { return pool(), nil }, up.URL, func(event) {})
 	r := httptest.NewRequest("POST", "http://127.0.0.1:18455/backend-api/codex/responses", strings.NewReader(`{"service_tier":"priority","input":[{"encrypted_content":"sealed"}]}`))
 	r.Header.Set("Authorization", "Bearer token-two")
 	r.Header.Set("chatgpt-account-id", "acct-two")
@@ -296,7 +336,7 @@ func TestPreferredKeepsSealedOwnerAndFallsBack(t *testing.T) {
 	}
 }
 
-func TestUnknownSealedOwnerNeverAssignedToPreferred(t *testing.T) {
+func TestUnknownStoredResponseOwnerNeverAssignedToPreferred(t *testing.T) {
 	n := 0
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { n++; w.WriteHeader(200) }))
 	defer up.Close()
@@ -304,8 +344,8 @@ func TestUnknownSealedOwnerNeverAssignedToPreferred(t *testing.T) {
 	c.Preferred = "two"
 	var events []event
 	g := newGateway(func() (config, error) { return c, nil }, up.URL, func(e event) { events = append(events, e) })
-	if w := ask(g, `{"input":[{"encrypted_content":"sealed"}]}`); w.Code != 409 || n != 0 {
-		t.Fatalf("sealed history with unknown owner was forwarded: %d %d", w.Code, n)
+	if w := ask(g, `{"previous_response_id":"r1","input":[]}`); w.Code != 409 || n != 0 {
+		t.Fatalf("stored response with unknown owner was forwarded: %d %d", w.Code, n)
 	}
 	if len(events) == 0 || events[0].Kind != "rejected" || events[0].Status != 409 || events[0].Reason != "sealed_owner_unknown" {
 		t.Fatalf("rejection not recorded: %+v", events)
@@ -322,7 +362,7 @@ func TestRejectionsAreRecordedWithReason(t *testing.T) {
 	}
 	g.remember("test-session", "one")
 	g.cool("one", time.Now().Add(time.Hour))
-	if w := ask(g, `{"input":[{"encrypted_content":"sealed"}]}`); w.Code != 409 {
+	if w := ask(g, `{"previous_response_id":"r1","input":[]}`); w.Code != 409 {
 		t.Fatal(w.Code)
 	}
 	var got []string
@@ -350,8 +390,8 @@ func TestRouteNameKeepsOnlyShape(t *testing.T) {
 	}
 }
 
-// Desktop logged in to B resumes a thread whose sealed history is A's: the guess fails upstream.
-// Once the desktop is back on A the thread must work again, not stay pinned to B.
+// Desktop logged in to B resumes a thread whose encrypted history B cannot read: B refuses it, the
+// next account serves it and becomes the owner. The failed guess is never pinned.
 func TestFailedOwnerGuessIsNotPinned(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -374,8 +414,8 @@ func TestFailedOwnerGuessIsNotPinned(t *testing.T) {
 		g.ServeHTTP(w, r)
 		return w.Code
 	}
-	if code := send("token-two", "acct-two"); code != 400 {
-		t.Fatalf("wrong-account guess: %d", code)
+	if code := send("token-two", "acct-two"); code != 200 {
+		t.Fatalf("unreadable history did not move to the next account: %d", code)
 	}
 	if code := send("token-one", "acct-one"); code != 200 {
 		t.Fatalf("thread stayed pinned to the failed guess: %d", code)
