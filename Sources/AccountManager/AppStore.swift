@@ -29,7 +29,7 @@ enum SlotStatus: Equatable {
     @Published var loginSlotID: String?
     @Published var launchingDesktop = Set<String>()
     private let accountDesktop = AccountDesktopLauncher()
-    private lazy var sharedDesktop = SharedDesktopSwitcher(root: root)
+    private lazy var sharedDesktop = SharedDesktopLogin(root: root)
     @Published var migratingCredentials = false
     @Published var gatewayEnabled = UserDefaults.standard.bool(forKey: "gateway.enabled")
     @Published var gatewayReady = false
@@ -154,7 +154,7 @@ enum SlotStatus: Equatable {
             status[slot.id] = collectorRetry.paused.contains(slot.id) ? .failure(CollectorRetryPolicy.message) : .disconnected
         }
         if preview { loadPreview(); return }
-        if sharedDesktop.pending { banner = "上次切换未完成，已暂停采集。请退出 Codex 后点账号名称恢复登录。" }
+        if sharedDesktop.interruptedSwitch { banner = "旧版本留下了一次未完成的桌面切换。新版不再改 Codex 登录；如账号不对，请在 Codex 里重新登录。" }
         loadResetMonitor()
         loadPersonalX()
         checkResetAnnouncements()
@@ -258,7 +258,7 @@ enum SlotStatus: Equatable {
         do {
             if enabled {
                 do {
-                    guard loginSlotID == nil, launchingDesktop.isEmpty, !sharedDesktop.pending else { throw GatewayConfigurationError.unavailable }
+                    guard loginSlotID == nil, launchingDesktop.isEmpty else { throw GatewayConfigurationError.unavailable }
                     try updateGatewayPool(); try gateway.start()
                 } catch {
                     // A gateway that already serves keeps serving; otherwise do not leave Codex on a dead port.
@@ -357,7 +357,7 @@ enum SlotStatus: Equatable {
         }
     }
     private func syncUsage(_ id: String, force: Bool = false) async {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, !preview, persistenceEnabled, index(id) != nil, loginSlotID != id, !usageLoading.contains(id), !collectorRetry.paused.contains(id) else { return }
+        guard launchingDesktop.isEmpty, !preview, persistenceEnabled, index(id) != nil, loginSlotID != id, !usageLoading.contains(id), !collectorRetry.paused.contains(id) else { return }
         if !force, let next = nextUsagePoll[id], next > Date() { return }
         usageLoading.insert(id); defer { usageLoading.remove(id) }
         nextUsagePoll[id] = Date().addingTimeInterval(300)
@@ -399,7 +399,7 @@ enum SlotStatus: Equatable {
         for slot in saved.accounts { await sync(slot.id, force: force) }
     }
     private func sync(_ id: String, force: Bool = false) async {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, persistenceEnabled, !preview, !busy.contains(id), loginSlotID != id, index(id) != nil else { return }
+        guard launchingDesktop.isEmpty, persistenceEnabled, !preview, !busy.contains(id), loginSlotID != id, index(id) != nil else { return }
         guard !collectorRetry.paused.contains(id) else { return }
         if case .wrongAccount = status[id] { return }
         if !force, let next = nextPoll[id], next > Date() { return }
@@ -493,7 +493,7 @@ enum SlotStatus: Equatable {
     }
     func connect(_ id: String) { loginQueue.removeAll(); Task { await beginLogin(id) } }
     func canOpenConnection(_ id: String) -> Bool {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, canConnect, index(id) != nil else { return false }
+        guard launchingDesktop.isEmpty, canConnect, index(id) != nil else { return false }
         if loginSlotID == id { return loginURL != nil }
         return loginSlotID == nil && !busy.contains(id)
     }
@@ -507,8 +507,8 @@ enum SlotStatus: Equatable {
         if loginSlotID == id { reopenLogin() } else { connect(id) }
     }
     private func beginLogin(_ id: String) async {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, desktopSelection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
-            banner = "此账号正在用于桌面端。请先切换到其他账号并退出旧独立窗口，再重新授权。"; return
+        guard launchingDesktop.isEmpty, desktopSelection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
+            banner = "此账号正在用于桌面端。请先在 Codex 里登录其他账号并退出旧独立窗口，再重新授权。"; return
         }
         guard loginSlotID == nil, canConnect, !busy.contains(id), !usageLoading.contains(id), index(id) != nil else { return }
         resumeCollector(id)
@@ -578,7 +578,7 @@ enum SlotStatus: Equatable {
         persist(); onChange?()
     }
     func addAccount(profile: String, alias: String) {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, canConnect, loginSlotID == nil, profiles.contains(where: { $0.id == profile }) else { return }
+        guard launchingDesktop.isEmpty, canConnect, loginSlotID == nil, profiles.contains(where: { $0.id == profile }) else { return }
         let id = "account-" + UUID().uuidString.lowercased()
         let clean = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         var slot = AccountSlot(id: id, name: "新账号", chromeProfile: profile)
@@ -587,8 +587,8 @@ enum SlotStatus: Equatable {
         connect(id)
     }
     func disconnect(_ id: String) async {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, desktopSelection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
-            banner = "此账号正在用于桌面端。请先切换到其他账号并退出旧独立窗口，再移除连接。"; return
+        guard launchingDesktop.isEmpty, desktopSelection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
+            banner = "此账号正在用于桌面端。请先在 Codex 里登录其他账号并退出旧独立窗口，再移除连接。"; return
         }
         guard canConnect, index(id) != nil, !busy.contains(id), !usageLoading.contains(id), loginSlotID == nil else { return }
         busy.insert(id); defer { busy.remove(id) }
@@ -642,64 +642,23 @@ enum SlotStatus: Equatable {
             }
         }
     }
-    func openAccountDesktop(_ id: String) {
-        if gatewayEnabled { selectGatewayAccount(id); gatewayCaption = "新请求优先使用 \(slot(id)?.displayName ?? "所选账号")"; return }
-        guard canConnect, let selected = slot(id), selected.expectedAccountID != nil,
-              loginSlotID == nil, launchingDesktop.isEmpty else { return }
-        // This check is read-only. Explain an existing blocker before asking for a restart.
-        do { try sharedDesktop.preflight(accounts: saved.accounts, legacy: accountDesktop) }
-        catch {
-            banner = (error as? DesktopSwitchFailure)?.localizedDescription
-                ?? (error as? DesktopLaunchError)?.localizedDescription
-                ?? "无法检查切换条件，未退出 Codex 或修改登录。"
-            return
+    /// An account-name click: with routing on it orders new conversations; otherwise offer to turn routing on.
+    func chooseAccount(_ id: String) {
+        guard !preview, let selected = slot(id), selected.expectedAccountID != nil else { return }
+        if !gatewayEnabled {
+            let alert = NSAlert(); alert.messageText = "开启自动账号路由？"
+            alert.informativeText = "开启后新会话优先使用 \(selected.displayName)，额度用完自动换其他账号。已打开的会话需重启 Codex 后才经过路由。"
+            alert.addButton(withTitle: "开启路由"); alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            setGatewayEnabled(true, confirm: false)
+            guard gatewayEnabled else { return }
         }
-        let alert = NSAlert()
-        alert.messageText = sharedDesktop.pending ? "恢复上次未完成的切换" : "切换到 \(selected.displayName)？"
-        alert.informativeText = "将退出并重新打开当前 Codex，保留原项目、会话文件和配置。正在执行的任务会被中断，请先等它们结束。此前打开的独立账号窗口需要先退出。"
-        alert.addButton(withTitle: sharedDesktop.pending ? "恢复登录" : "切换并重启")
-        alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        launchingDesktop.insert(id)
-        Task { [weak self] in
-            guard let self else { return }
-            defer {
-                self.launchingDesktop.remove(id)
-                self.nextPoll.removeAll(); self.nextUsagePoll.removeAll()
-                self.onChange?()
-            }
-            do {
-                try self.sharedDesktop.preflight(accounts: self.saved.accounts, legacy: self.accountDesktop)
-                self.banner = "正在等待当前额度查询结束，随后切换账号…"
-                // Freeze new polls, wait for in-flight calls, then stop every owned collector.
-                // Startup (20s) plus one request (35s) can exceed the old 40s deadline.
-                for _ in 0..<650 {
-                    if self.busy.isEmpty && self.usageLoading.isEmpty { break }
-                    try await Task.sleep(for: .milliseconds(100))
-                }
-                guard self.busy.isEmpty, self.usageLoading.isEmpty else { throw DesktopSwitchFailure.collectorsBusy }
-                self.banner = "正在停止管家的额度采集…"
-                for client in self.clients.values {
-                    guard await client.stopAndWait() else { throw DesktopSwitchFailure.collectorStop }
-                }
-                self.clients.removeAll()
-                self.banner = "正在切换并重新打开 Codex…"
-                try await self.sharedDesktop.switchAccount(slot: selected, accounts: self.saved.accounts, legacy: self.accountDesktop)
-                self.resumeCollector(id)
-                self.banner = "已重新打开 Codex，项目与会话目录保持原位。请核对当前账号为 \(selected.displayName)。"
-                self.nextPoll.removeAll(); self.nextUsagePoll.removeAll()
-            } catch {
-                self.banner = (error as? DesktopSwitchFailure)?.localizedDescription
-                    ?? (error as? DesktopLaunchError)?.localizedDescription
-                    ?? "切换未完成，已停止操作。请检查钥匙串权限后重试。"
-            }
-        }
+        selectGatewayAccount(id)
+        gatewayCaption = "新会话优先使用 \(selected.displayName)"
     }
-    func desktopActionLabel(_ id: String) -> String {
-        if gatewayEnabled { return "将此账号用于网关新请求" }
-        if !launchingDesktop.isEmpty { return "正在切换 Codex…" }
-        if sharedDesktop.pending { return "恢复未完成的切换…" }
-        return desktopSelection?.slotID == id ? "重新打开当前账号的 Codex…" : "切换到此账号（保留项目和会话）…"
+    func accountActionLabel(_ id: String) -> String {
+        guard gatewayEnabled else { return "开启自动路由并设为新会话优先…" }
+        return gatewayPreferred == id ? "新会话优先使用此账号" : "设为新会话优先"
     }
     private func openChrome(for id: String, url: URL) throws {
         guard let slot = slot(id) else { return }

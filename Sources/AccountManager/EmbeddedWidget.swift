@@ -73,11 +73,11 @@ struct EmbeddedWidgetView: View {
         let banked = slot.snapshot?.rates.rateLimitResetCredits?.availableCount
         let routing = store.routingActivity.count(for: slot.id) > 0
         return VStack(alignment: .leading, spacing: 0) {
-            Button { store.openAccountDesktop(slot.id) } label: {
+            Button { store.chooseAccount(slot.id) } label: {
                 Text(slot.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.75)
             }.buttonStyle(.plain)
-                .disabled(store.preview || store.loginSlotID != nil || !store.launchingDesktop.isEmpty || slot.expectedAccountID == nil)
-                .help(store.desktopActionLabel(slot.id))
+                .disabled(store.preview || slot.expectedAccountID == nil)
+                .help(store.accountActionLabel(slot.id))
             Spacer(minLength: 4).allowsHitTesting(false)
             if let remaining {
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
