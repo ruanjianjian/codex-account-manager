@@ -8,7 +8,6 @@
 - 每账号 `accounts/<id>/`：官方 Codex app-server 的独立 CODEX_HOME，默认由官方 CLI 的 macOS Keychain 后端保存和刷新；确认文件模式后保存在本目录的 `auth.json`，文件600、目录700，内容不加密，同一系统用户的程序可能读取。原钥匙串不删除。
 - 选择专用 Chrome 窗口时，`browsers/<id>/` 保存该浏览器会话。选择已有 Profile 时只启动对应窗口，不复制 Cookie。
 - X 登录使用公开版应用身份下的 WebKit 持久网站存储，不导出 Cookie，不读取 Safari/Chrome 的 X Cookie。
-- DeepSeek API Key 只存在进程内存；测试结果只保存公开正文及过滤后的状态，不保存 Key。退出后清除内存引用，不承诺对系统交换文件作安全擦除。
 
 不要共享整个应用数据目录、钥匙串、浏览器存储、OAuth URL或日志。缓存中的完整邮箱/账号ID仍属于个人信息。
 
@@ -19,7 +18,6 @@
 - 添加/同步Codex账号：官方 Codex CLI 访问 OpenAI/ChatGPT 登录及服务端接口；账号额度每分钟、token活动约每5分钟读取。
 - 自行开启个人X监控：访问 `x.com/thsottiaux` 及 X 页面依赖的资源。X会接收正常浏览器请求和该个人登录会话。
 - 自行开启第三方公告监控：访问 `www.codexreset-news.com/api/v1/tibo`，不向公告源发送 Codex 登录凭据。
-- 自行提交DeepSeek手动测试：Key和指定公开URL发送至 `api.deepseek.com`，不发送Codex账号信息。
 
 首次空账号启动不发起上述采集请求。应用开启时读取本机 Chrome Profile 的目录名与显示名，供选择登录窗口；不会上传这些配置。
 

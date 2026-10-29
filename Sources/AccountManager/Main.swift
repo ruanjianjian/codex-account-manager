@@ -21,6 +21,7 @@ import AccountCore
     private var statusItem: NSStatusItem!
     private var statusMenu = NSMenu()
     private var desktopPanel: DesktopPanel!
+    private var embeddedPanel: DesktopPanel!
     private let hotKey = GlobalHotKey()
     private let interaction = PanelInteraction()
     private var shortcutPresented = false
@@ -43,6 +44,7 @@ import AccountCore
         statusItem.button?.toolTip = "悬停查看账号；移开收起；右键打开菜单"
         store.onChange = { [weak self] in self?.updateMenu() }
         makeDesktopPanel()
+        makeEmbeddedPanel()
         if let button = statusItem.button {
             interaction.pinned = { [weak self] in self?.store.desktopPinned ?? false }
             interaction.canShow = { [weak self] in self?.window?.isVisible != true }
@@ -91,6 +93,28 @@ import AccountCore
         }
         desktopPanel.setFrameAutosaveName("CodexDesktopPanel")
     }
+    /// Desktop level, like macOS's own widgets: every app window covers it, it stays on all Spaces.
+    private func makeEmbeddedPanel() {
+        embeddedPanel = DesktopPanel(contentRect: NSRect(origin: .zero, size: EmbeddedWidgetView.size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        embeddedPanel.title = "Codex Accounts Beta · 桌面组件"
+        embeddedPanel.isOpaque = false; embeddedPanel.backgroundColor = .clear
+        embeddedPanel.hasShadow = true; embeddedPanel.hidesOnDeactivate = false
+        embeddedPanel.isReleasedWhenClosed = false; embeddedPanel.isMovableByWindowBackground = true
+        embeddedPanel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        embeddedPanel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
+        embeddedPanel.contentView = NSHostingView(rootView: EmbeddedWidgetView(store: store, present: { [weak self] action in self?.present(action) }))
+        if !embeddedPanel.setFrameUsingName("CodexEmbeddedWidget")
+            || !NSScreen.screens.contains(where: { $0.visibleFrame.contains(NSPoint(x: embeddedPanel.frame.midX, y: embeddedPanel.frame.midY)) }) {
+            resetEmbeddedPosition()
+        }
+        embeddedPanel.setContentSize(EmbeddedWidgetView.size)
+        embeddedPanel.setFrameAutosaveName("CodexEmbeddedWidget")
+    }
+    @objc private func resetEmbeddedPosition() {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        embeddedPanel.setFrameOrigin(WidgetPlacement.embeddedOrigin(panelSize: embeddedPanel.frame.size, visibleFrame: screen.visibleFrame))
+        embeddedPanel.saveFrame(usingName: "CodexEmbeddedWidget")
+    }
     @objc private func resetDesktopPosition() {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         desktopPanel.setFrameOrigin(NSPoint(x: screen.visibleFrame.minX + 28, y: screen.visibleFrame.maxY - desktopPanel.frame.height - 28))
@@ -107,6 +131,7 @@ import AccountCore
         }
         desktopPanel.level = (store.desktopPinned || shortcutPresented) ? .floating : NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         if store.desktopVisible { desktopPanel.orderFrontRegardless() } else { desktopPanel.orderOut(nil) }
+        if store.embeddedVisible { embeddedPanel.orderFrontRegardless() } else { embeddedPanel.orderOut(nil) }
     }
     private func registerShortcut() {
         if store.shortcutChoice == "none" { hotKey.stop(); store.shortcutIssue = nil; updateMenu(); return }
@@ -144,7 +169,7 @@ import AccountCore
             toggleFromShortcut()
         }
     }
-    @objc private func toggleDesktop() { shortcutPresented = false; store.setDesktopVisible(!store.desktopVisible) }
+    @objc private func toggleDesktop() { store.setEmbeddedVisible(!store.embeddedVisible) }
     @objc private func toggleDesktopPin() { store.setDesktopPinned(!store.desktopPinned) }
     func windowDidMove(_ notification: Notification) {
         guard let moved = notification.object as? NSWindow, moved === desktopPanel else { return }
@@ -193,11 +218,11 @@ import AccountCore
         statusItem.button?.title = " " + (store.preview ? "额度预览" : store.menuTitle)
         let menu = NSMenu()
         let open = NSMenuItem(title: "显示账号卡片", action: #selector(showWidget), keyEquivalent: ""); open.target = self; menu.addItem(open)
-        let desktop = NSMenuItem(title: (store.desktopVisible ? "隐藏桌面组件" : "显示桌面组件") + "  (" + store.shortcutLabel + ")", action: #selector(toggleDesktop), keyEquivalent: "")
-        desktop.target = self; menu.addItem(desktop)
+        let desktop = NSMenuItem(title: "嵌入桌面组件", action: #selector(toggleDesktop), keyEquivalent: "")
+        desktop.target = self; desktop.state = store.embeddedVisible ? .on : .off; menu.addItem(desktop)
         let pin = NSMenuItem(title: "组件置顶", action: #selector(toggleDesktopPin), keyEquivalent: "")
         pin.target = self; pin.state = store.desktopPinned ? .on : .off; menu.addItem(pin)
-        let position = NSMenuItem(title: "重置组件位置", action: #selector(resetDesktopPosition), keyEquivalent: "")
+        let position = NSMenuItem(title: "重置组件位置", action: #selector(resetPositions), keyEquivalent: "")
         position.target = self; menu.addItem(position)
         let size = NSMenuItem(title: "恢复默认尺寸", action: #selector(resetDesktopSize), keyEquivalent: "")
         size.target = self; menu.addItem(size)
@@ -217,13 +242,23 @@ import AccountCore
         statusMenu = menu
     }
     @objc private func showWidget() { presentWidget(toggle: false) }
+    @objc private func resetPositions() { resetDesktopPosition(); resetEmbeddedPosition() }
     private func present(_ action: WidgetAction) {
+        // Align with whichever account view is on screen before the transient one closes.
+        let anchor = desktopPanel.isVisible ? desktopPanel.frame : (embeddedPanel.isVisible ? embeddedPanel.frame : nil)
+        if case .settings = action { store.settingsHeight = min(800, max(560, anchor.map { desktopPanel.isVisible ? $0.height : 640 } ?? 640)) }
         dismissTransientPanel()
         window?.close()
         let content = WidgetActionView(store: store, action: action, onClose: { [weak self] in self?.window?.close() }, present: { [weak self] in self?.present($0) })
         let utility = NSWindow(contentViewController: NSHostingController(rootView: content))
         utility.title = action.title
         utility.styleMask = [.titled, .closable]
+        if case .settings = action {
+            // Same chrome as the dashboard: no title bar strip, only the window buttons.
+            utility.styleMask.insert(.fullSizeContentView)
+            utility.titlebarAppearsTransparent = true; utility.titleVisibility = .hidden
+            utility.isMovableByWindowBackground = true; utility.backgroundColor = NSColor(white: 0.97, alpha: 1)
+        }
         if case .activity = action {
             utility.styleMask.insert(.resizable)
             utility.contentMinSize = NSSize(width: 520, height: 500)
@@ -236,8 +271,8 @@ import AccountCore
         utility.level = .floating
         window = utility
         let screen = desktopPanel.screen ?? NSScreen.main
-        if let area = screen?.visibleFrame {
-            utility.setFrameOrigin(NSPoint(x: max(area.minX, area.midX - utility.frame.width / 2), y: max(area.minY, area.midY - utility.frame.height / 2)))
+        if let area = screen?.visibleFrame, utility.frameAutosaveName.isEmpty {
+            utility.setFrameOrigin(WidgetPlacement.besideOrigin(windowSize: utility.frame.size, anchor: anchor, visibleFrame: area))
         }
         NSApp.setActivationPolicy(.regular)
         utility.makeKeyAndOrderFront(nil)

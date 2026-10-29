@@ -17,6 +17,27 @@ public enum WidgetPlacement {
         frames.firstIndex { $0.contains(point) }
     }
 
+    /// The embedded component sits beside macOS's own desktop widgets (two small
+    /// widgets wide from the left edge), tops aligned with them.
+    public static func embeddedOrigin(panelSize: CGSize, visibleFrame: CGRect) -> CGPoint {
+        let left = visibleFrame.minX + 8
+        let x = max(left, min(visibleFrame.minX + 378, visibleFrame.maxX - panelSize.width - 8))
+        let y = max(visibleFrame.minY + 8, visibleFrame.maxY - panelSize.height - 10)
+        return CGPoint(x: x, y: y)
+    }
+
+    /// Settings and other windows open beside the dashboard, tops aligned: on its left when
+    /// there is room, otherwise on its right, otherwise centred on the screen.
+    public static func besideOrigin(windowSize: CGSize, anchor: CGRect?, visibleFrame: CGRect) -> CGPoint {
+        let gap: CGFloat = 10
+        let centred = CGPoint(x: visibleFrame.midX - windowSize.width / 2, y: visibleFrame.midY - windowSize.height / 2)
+        guard let anchor, visibleFrame.intersects(anchor) else { return centred }
+        let y = max(visibleFrame.minY, min(anchor.maxY - windowSize.height, visibleFrame.maxY - windowSize.height))
+        if anchor.minX - gap - windowSize.width >= visibleFrame.minX { return CGPoint(x: anchor.minX - gap - windowSize.width, y: y) }
+        if anchor.maxX + gap + windowSize.width <= visibleFrame.maxX { return CGPoint(x: anchor.maxX + gap, y: y) }
+        return centred
+    }
+
     public static func origin(near point: CGPoint, panelSize: CGSize, visibleFrame: CGRect) -> CGPoint {
         let inset: CGFloat = 8
         let left = visibleFrame.minX + inset

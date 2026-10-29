@@ -22,7 +22,7 @@ import AccountCore
     func openTibo() {
         guard !fetching else { return }
         navigationFinished = false; navigationFailed = false
-        webView.load(URLRequest(url: DeepSeekProbe.profileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+        webView.load(URLRequest(url: TiboPostLink.profileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { navigationFinished = true }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { navigationFailed = true }
@@ -44,7 +44,7 @@ import AccountCore
         defer { fetching = false }
         if reload || webView.url == nil {
             navigationFinished = false; navigationFailed = false
-            webView.load(URLRequest(url: DeepSeekProbe.profileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+            webView.load(URLRequest(url: TiboPostLink.profileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
         }
         var lastError: Error = PersonalXError.noPosts
         for _ in 0..<30 {

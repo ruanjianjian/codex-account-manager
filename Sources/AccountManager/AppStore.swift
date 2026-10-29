@@ -43,8 +43,20 @@ enum SlotStatus: Equatable {
     @Published var now = Date()
     @Published var profiles: [ChromeProfile] = []
     @Published var loginAtLaunch = false
-    @Published var desktopVisible = UserDefaults.standard.object(forKey: "desktop.visible") as? Bool ?? true
+    // The tall dashboard now only stays up when pinned; otherwise it appears from the menu bar.
+    @Published var desktopVisible = UserDefaults.standard.bool(forKey: "desktop.pinned")
     @Published var desktopPinned = UserDefaults.standard.bool(forKey: "desktop.pinned")
+    /// Settings match the dashboard's height when opened beside it.
+    @Published var settingsHeight: CGFloat = 640
+    /// Wide component beside macOS's desktop widgets. Replaces the retired unpinned tall panel.
+    @Published var embeddedVisible: Bool = {
+        let defaults = UserDefaults.standard
+        if let value = defaults.object(forKey: "embedded.visible") as? Bool { return value }
+        // One-time migration: desktop.visible later only tracks the transient menu-bar panel.
+        let migrated = (defaults.object(forKey: "desktop.visible") as? Bool ?? true) && !defaults.bool(forKey: "desktop.pinned")
+        defaults.set(migrated, forKey: "embedded.visible")
+        return migrated
+    }()
     @Published var shortcutChoice = UserDefaults.standard.string(forKey: "desktop.shortcut") ?? "none"
     @Published var shortcutIssue: String?
     @Published var usageErrors: [String: String] = [:]
@@ -60,13 +72,6 @@ enum SlotStatus: Equatable {
     }
     private var personalXTask: Task<Void, Never>?
     private var personalXStorageAvailable = true
-    @Published var deepSeekHasKey = false
-    @Published var deepSeekTesting = false
-    @Published var deepSeekResult: DeepSeekProbeResult?
-    @Published var deepSeekError: String?
-    private var deepSeekKey = "" // Session only; never encoded, logged or read from Keychain.
-    private var deepSeekTask: Task<Void, Never>?
-    private var deepSeekGeneration = UUID()
     private var resetCheckTask: Task<Void, Never>?
     private var nextResetCheck = Date.distantPast
     private var resetCheckFailures = 0
@@ -963,6 +968,15 @@ enum SlotStatus: Equatable {
         desktopPinned = pinned; UserDefaults.standard.set(pinned, forKey: "desktop.pinned")
         onDesktopChange?()
     }
+    enum DesktopMode: String, CaseIterable { case off, embedded, floating }
+    var desktopMode: DesktopMode { desktopPinned ? .floating : (embeddedVisible ? .embedded : .off) }
+    func setDesktopMode(_ mode: DesktopMode) {
+        embeddedVisible = mode == .embedded; UserDefaults.standard.set(embeddedVisible, forKey: "embedded.visible")
+        desktopPinned = mode == .floating; UserDefaults.standard.set(desktopPinned, forKey: "desktop.pinned")
+        desktopVisible = desktopPinned; UserDefaults.standard.set(desktopVisible, forKey: "desktop.visible")
+        onDesktopChange?()
+    }
+    func setEmbeddedVisible(_ visible: Bool) { setDesktopMode(visible ? .embedded : (desktopPinned ? .floating : .off)) }
     func setNotifications(_ enabled: Bool) {
         guard !preview else { return }
         if !enabled { saved.notificationsEnabled = false; persist(); return }
@@ -978,47 +992,10 @@ enum SlotStatus: Equatable {
             if enabled && !loginAtLaunch { banner = "请在系统设置的登录项中允许 Codex Accounts Beta。" }
         } catch { banner = "登录时启动未设置成功，可在系统设置 → 通用 → 登录项中添加账号管家。" }
     }
-    func testDeepSeek(key input: String, referenceURL: String) {
-        guard !preview, !deepSeekTesting else { return }
-        do {
-            let key = try DeepSeekProbe.validatedKey(input.isEmpty ? deepSeekKey : input)
-            let reference = referenceURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard reference.isEmpty || TiboPostLink.parse(reference) != nil else { throw DeepSeekProbeError.invalidPostURL }
-            deepSeekKey = key; deepSeekHasKey = true
-            deepSeekError = nil; deepSeekResult = nil; deepSeekTesting = true
-            let generation = UUID(); deepSeekGeneration = generation
-            deepSeekTask = Task { [weak self] in
-                do {
-                    let result = try await DeepSeekProbe.run(key: key, referenceURL: reference)
-                    guard let self, self.deepSeekGeneration == generation else { return }
-                    self.deepSeekResult = result
-                    // Only public results, with credentials redacted, are retained for diagnosis.
-                    do {
-                        let file = self.root.appendingPathComponent("deepseek-test-result.json")
-                        try JSONEncoder().encode(result).write(to: file, options: .atomic)
-                        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-                    } catch { self.deepSeekError = "抓取完成，但未能保存本机测试结果。" }
-                } catch is CancellationError { }
-                catch {
-                    guard let self, self.deepSeekGeneration == generation else { return }
-                    self.deepSeekError = (error as? DeepSeekProbeError ?? .network).localizedDescription
-                }
-                guard let self, self.deepSeekGeneration == generation else { return }
-                self.deepSeekTesting = false; self.deepSeekTask = nil
-            }
-        } catch { deepSeekError = (error as? DeepSeekProbeError ?? .network).localizedDescription }
-    }
-    func cancelDeepSeekTest() {
-        deepSeekGeneration = UUID(); deepSeekTask?.cancel(); deepSeekTask = nil; deepSeekTesting = false
-    }
-    func clearDeepSeekKey() {
-        cancelDeepSeekTest(); deepSeekKey = ""; deepSeekHasKey = false; deepSeekError = nil
-    }
     func shutdown() {
         // Keep the routing preference for the next launch, but leave Codex on the direct provider while we are gone.
         try? gateway.configuration.restore(); try? gateway.stop(restore: false)
         personalXTask?.cancel(); xBrowser?.stop()
-        clearDeepSeekKey()
         timer?.invalidate(); resetCheckTask?.cancel()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         observers.forEach { NotificationCenter.default.removeObserver($0) }

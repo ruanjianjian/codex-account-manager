@@ -96,108 +96,165 @@ struct AccountDetails: View {
 struct GeneralSettings: View {
     @ObservedObject var store: AppStore
     let onClose: () -> Void
-    @State private var showDeepSeek = false
     let openPersonalX: () -> Void
+    private let paper = Color(red: 0.065, green: 0.085, blue: 0.105)
+    private let mint = Color(red: 0.55, green: 0.96, blue: 0.78)
     var body: some View {
-        ScrollView {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("管家设置").font(.title2.weight(.semibold))
-            VStack(alignment: .leading, spacing: 7) {
+        VStack(spacing: 0) {
+            HStack {
+                Text("CODEX / SETTINGS").font(.system(size: 12, weight: .heavy)).tracking(0.6)
+                Spacer()
+            }.padding(.horizontal, 14).padding(.top, 34).padding(.bottom, 8)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    routing
+                    caption("显示")
+                    card {
+                        row("桌面组件") {
+                            Picker("桌面组件", selection: Binding(get: { store.desktopMode }, set: store.setDesktopMode)) {
+                                Text("关闭").tag(AppStore.DesktopMode.off)
+                                Text("嵌入桌面").tag(AppStore.DesktopMode.embedded)
+                                Text("置顶浮动").tag(AppStore.DesktopMode.floating)
+                            }.pickerStyle(.segmented).labelsHidden().fixedSize()
+                        }
+                        Divider()
+                        row("呼出 / 隐藏") {
+                            Picker("呼出 / 隐藏", selection: Binding(get: { store.shortcutChoice }, set: store.setShortcut)) {
+                                Text("不启用").tag("none")
+                                Text("⌥ 空格").tag("space")
+                                Text("⌃ ;").tag("ctrl-semicolon")
+                                Text("⌥ X").tag("x")
+                            }.pickerStyle(.menu).labelsHidden().fixedSize()
+                        }
+                        if let issue = store.shortcutIssue { note(issue).foregroundStyle(.red).padding(.bottom, 8) }
+                    }
+                    caption("提醒")
+                    card {
+                        row("额度变化通知") { switchToggle(Binding(get: { store.saved.notificationsEnabled }, set: store.setNotifications)) }
+                        Divider()
+                        row("登录 Mac 时启动") { switchToggle(Binding(get: { store.loginAtLaunch }, set: store.setLoginAtLaunch)) }
+                    }
+                    caption("重置公告")
+                    card {
+                        row("监控 Tibo 重置公告") { switchToggle(Binding(get: { store.resetMonitor.enabled }, set: store.setResetMonitoring)) }
+                        Divider()
+                        HStack {
+                            note(store.resetMonitorCaption)
+                            Spacer()
+                            Button("立即检查") { store.checkResetAnnouncements(force: true) }.controlSize(.small)
+                                .disabled(store.preview || !store.resetMonitor.enabled || store.checkingResetAnnouncements)
+                        }.padding(.vertical, 8)
+                        if let result = store.resetRefreshCaption {
+                            note(result).padding(.bottom, 6)
+                            if let link = store.resetMonitor.lastAnnouncement?.originalURL { Link("查看公告原帖", destination: link).font(.system(size: 10)).padding(.bottom, 6) }
+                        }
+                        if !store.personalX.enabled {
+                            HStack {
+                                Link("公告源：Codex Reset News", destination: URL(string: "https://www.codexreset-news.com/developers?lang=en")!)
+                                Link("上游：codex-reset.com", destination: URL(string: "https://codex-reset.com/")!)
+                            }.font(.system(size: 10)).padding(.bottom, 8)
+                        }
+                        if let updated = store.resetMonitor.sourceUpdatedAt {
+                            note("源更新：" + updated.formatted(date: .abbreviated, time: .shortened)).padding(.bottom, 8)
+                        }
+                    }
+                    caption("个人 X 监控")
+                    card {
+                        note(store.personalXCaption).padding(.top, 9)
+                        HStack {
+                            Button("登录 / 查看个人 X", action: openPersonalX).disabled(store.preview)
+                            if store.personalX.enabled { Button("停用") { store.disablePersonalX() }.disabled(store.personalXTesting) }
+                        }.controlSize(.small).padding(.vertical, 8)
+                        if let post = store.personalX.lastPosts.first, let link = post.originalURL {
+                            Link("最近读到：" + (post.date?.formatted(date: .abbreviated, time: .shortened) ?? post.id), destination: link).font(.system(size: 10))
+                            Text(verbatim: String(post.text.prefix(200))).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).padding(.bottom, 8)
+                        }
+                    }
+                    caption("登录存储")
+                    card {
+                        row(store.usesFileCredentials ? "本机文件" : "系统钥匙串") {
+                            if !store.usesFileCredentials {
+                                Button(store.migratingCredentials ? "正在迁移…" : "改用本地文件存储…") { store.enableFileCredentials() }.controlSize(.small)
+                                    .disabled(store.preview || store.migratingCredentials || store.loginSlotID != nil || !store.launchingDesktop.isEmpty)
+                            } else { note("仅当前系统用户可读写") }
+                        }
+                    }
+                    caption("最近动态")
+                    card {
+                        DisclosureGroup("最近 8 条") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(store.saved.events.prefix(8)) { event in
+                                    note("\(event.time.formatted(date: .omitted, time: .shortened))  \(event.text)").frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }.padding(.top, 6)
+                        }.font(.system(size: 12, weight: .medium)).padding(.vertical, 9)
+                    }
+                }.padding(.horizontal, 14).padding(.bottom, 12)
+            }.scrollIndicators(.hidden)
+            HStack(spacing: 10) {
+                Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") · 仅本机存储")
+                Spacer()
+                Button("打开数据目录") { NSWorkspace.shared.open(store.root) }.buttonStyle(.plain)
+                Button("完成") { onClose() }.keyboardShortcut(.defaultAction).controlSize(.small)
+            }.font(.system(size: 10, weight: .medium)).padding(.horizontal, 14).padding(.vertical, 10)
+        }
+        .frame(width: 400, height: store.settingsHeight)
+        .foregroundStyle(Color(white: 0.12))
+        .background(Color(white: 0.97))
+        .preferredColorScheme(.light)
+    }
+    private var routing: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Circle().fill(store.gatewayEnabled ? (store.gatewayReady ? mint : .orange) : .white.opacity(0.3)).frame(width: 5, height: 5)
+                Text("自动账号路由").font(.system(size: 12, weight: .semibold))
+                Spacer()
                 Toggle("自动账号路由", isOn: Binding(get: { store.gatewayEnabled }, set: { store.setGatewayEnabled($0) }))
-                Text(store.gatewayCaption).font(.caption).foregroundStyle(.secondary)
-                if store.gatewayEnabled {
+                    .toggleStyle(.switch).controlSize(.mini).labelsHidden().tint(Color(red: 0.1, green: 0.55, blue: 0.45))
+            }.padding(.vertical, 9)
+            Text(store.gatewayCaption).font(.system(size: 10)).foregroundStyle(.white.opacity(0.65)).fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, store.gatewayEnabled ? 4 : 10)
+            if store.gatewayEnabled {
+                Divider().overlay(Color.white.opacity(0.12))
+                HStack {
+                    Text("新会话优先").font(.system(size: 12))
+                    Spacer()
                     Picker("新会话优先", selection: Binding(get: { store.gatewayPreferred }, set: store.selectGatewayAccount)) {
                         Text("自动选择").tag("")
                         ForEach(store.saved.accounts) { Text($0.displayName).tag($0.id) }
-                    }
-                    if !store.gatewayReady { Button("重试启动网关") { store.setGatewayEnabled(true, confirm: false) } }
-                }
-                Text("保留官方连接方式与 Fast 设置；重启 Codex 后，新旧会话都可通过网关。新请求自动选择账号；加密历史保持原账号，原账号不可用时提示，不重放工具。使用期间保持管家运行。")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            VStack(alignment: .leading, spacing: 7) {
-                Text("登录存储").font(.headline)
-                Text(store.usesFileCredentials ? "本机文件 · 仅当前系统用户可读写" : "系统钥匙串 · 跨应用写回可能再次要求授权")
-                    .font(.caption).foregroundStyle(.secondary)
-                if !store.usesFileCredentials {
-                    Button(store.migratingCredentials ? "正在迁移…" : "改用本地文件存储…") { store.enableFileCredentials() }
-                        .disabled(store.preview || store.migratingCredentials || store.loginSlotID != nil || !store.launchingDesktop.isEmpty)
-                    Text("连接账号前后都可选择；已连接的账号会一并迁移。需确认存储方式变化；不会删除原钥匙串记录。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    }.pickerStyle(.menu).labelsHidden().fixedSize()
+                }.padding(.vertical, 6)
+                if !store.gatewayReady {
+                    Button("重试启动网关") { store.setGatewayEnabled(true, confirm: false) }.controlSize(.small).padding(.bottom, 8)
                 }
             }
-            VStack(alignment: .leading, spacing: 7) {
-                Text("个人 X 监控").font(.headline)
-                Text(store.personalXCaption).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button("登录 / 查看个人 X", action: openPersonalX).disabled(store.preview)
-                    if store.personalX.enabled { Button("停用个人 X") { store.disablePersonalX() }.disabled(store.personalXTesting) }
-                }
-                Text("独立登录自己的 X，读取 Tibo 主页。无需 DeepSeek Key。首次读取建立基线，后续每分钟检测；新重置公告才刷新账号。")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if let post = store.personalX.lastPosts.first, let link = post.originalURL {
-                    Link("最近读到：" + (post.date?.formatted(date: .abbreviated, time: .shortened) ?? post.id), destination: link).font(.caption)
-                    Text(verbatim: String(post.text.prefix(200))).font(.caption).lineLimit(4)
-                }
-                Button("DeepSeek 实验性测试…") { showDeepSeek = true }.font(.caption)
-            }
-            Text("悬停菜单栏可展开，移出或点击外部自动收起；置顶后保持显示。账号名称保存在本机，刷新和重启不会为读取名称访问钥匙串。新增账号可填写名称，留空时显示脱敏邮箱。")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Toggle("显示桌面组件", isOn: Binding(get: { store.desktopVisible }, set: store.setDesktopVisible))
-            Toggle("桌面组件置顶", isOn: Binding(get: { store.desktopPinned }, set: store.setDesktopPinned))
-            Picker("呼出 / 隐藏", selection: Binding(get: { store.shortcutChoice }, set: store.setShortcut)) {
-                Text("不启用快捷键").tag("none")
-                Text("⌥ 空格").tag("space")
-                Text("⌃ ;（Control＋分号）").tag("ctrl-semicolon")
-                Text("⌥ X").tag("x")
-            }
-            if let issue = store.shortcutIssue { Text(issue).font(.caption).foregroundStyle(.red) }
-            Toggle("登录 Mac 时启动", isOn: Binding(get: { store.loginAtLaunch }, set: store.setLoginAtLaunch)).disabled(store.preview)
-            Toggle("重要变化发送系统通知", isOn: Binding(get: { store.saved.notificationsEnabled }, set: store.setNotifications)).disabled(store.preview)
-            Text("提醒额度恢复、临近重置仍有余量，以及 banked reset 即将到期。相同事件不重复提醒。")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Divider()
-            Text("读取账号在所有设备上的服务端总额度，每分钟自动同步，呼出时补查。无法按电脑拆分消耗；服务端更新可能有延迟。退出或休眠时暂停，唤醒补查，失败延后重试。")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle("监控 Tibo 重置公告", isOn: Binding(get: { store.resetMonitor.enabled }, set: store.setResetMonitoring)).disabled(store.preview)
-                HStack {
-                    Text(store.resetMonitorCaption).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("立即检查") { store.checkResetAnnouncements(force: true) }
-                        .disabled(store.preview || !store.resetMonitor.enabled || store.checkingResetAnnouncements)
-                }
-                Text(store.personalX.enabled ? "来源：本机个人 X 登录态。每分钟检查；打开 X 登录窗口时暂缓后台检查。失败退避、唤醒补查；实际额度以账号返回为准。" : "每5分钟检查；发现新公告自动刷新所有账号。公告源有延迟时会标注，实际额度以账号返回为准。")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if let result = store.resetRefreshCaption {
-                    Text(result).font(.caption)
-                    if let link = store.resetMonitor.lastAnnouncement?.originalURL { Link("查看公告原帖", destination: link).font(.caption) }
-                }
-                if !store.personalX.enabled { HStack {
-                    Link("公告源：Codex Reset News（第三方）", destination: URL(string: "https://www.codexreset-news.com/developers?lang=en")!)
-                    Link("上游：codex-reset.com", destination: URL(string: "https://codex-reset.com/")!)
-                }.font(.system(size: 10)) }
-                if let updated = store.resetMonitor.sourceUpdatedAt {
-                    Text("源更新：" + updated.formatted(date: .abbreviated, time: .shortened)).font(.system(size: 10)).foregroundStyle(.secondary)
-                }
-            }
-            DisclosureGroup("最近动态") {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(store.saved.events.prefix(8)) { event in
-                            Text("\(event.time.formatted(date: .omitted, time: .shortened))  \(event.text)")
-                                .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                }.frame(height: 120)
-            }
-            Button("打开本机数据目录") { NSWorkspace.shared.open(store.root) }
-            HStack { Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") · 仅本机存储").font(.caption).foregroundStyle(.secondary); Spacer(); Button("完成") { onClose() }.keyboardShortcut(.defaultAction) }
-        }.padding(26).frame(maxWidth: .infinity)
-        }.frame(width: 440, height: min(700, (NSScreen.main?.visibleFrame.height ?? 800) - 100))
-        .sheet(isPresented: $showDeepSeek) {
-            DeepSeekTestView(store: store, onClose: { showDeepSeek = false })
         }
+        .padding(.horizontal, 12).foregroundStyle(.white)
+        .background(paper, in: RoundedRectangle(cornerRadius: 12))
+        .environment(\.colorScheme, .dark)
+    }
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.system(size: 10, weight: .bold)).tracking(0.6).foregroundStyle(.secondary)
+            .padding(.top, 14).padding(.bottom, 6).padding(.leading, 2)
+    }
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) { content() }
+            .padding(.horizontal, 12).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+    }
+    private func row<Trailing: View>(_ title: String, @ViewBuilder _ trailing: () -> Trailing) -> some View {
+        HStack(spacing: 8) {
+            Text(title).font(.system(size: 12, weight: .medium))
+            Spacer(minLength: 8)
+            trailing()
+        }.padding(.vertical, 8)
+    }
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+    private func switchToggle(_ isOn: Binding<Bool>) -> some View {
+        Toggle("", isOn: isOn).toggleStyle(.switch).controlSize(.mini).labelsHidden().disabled(store.preview)
+            .tint(Color(red: 0, green: 0.46, blue: 0.53))
     }
 }
 

@@ -7,6 +7,16 @@ final class PersonalXMonitorTests: XCTestCase {
         XVisiblePost(url: "https://x.com/thsottiaux/status/\(id)", text: text,
                      publishedAt: ISO8601DateFormatter().string(from: now.addingTimeInterval(age)), truncated: truncated)
     }
+    func testLinksRequireTiboAndSortByIDNotPinnedPageOrder() {
+        let older = "2000000000000000001", newer = "2001000000000000001"
+        func url(_ id: String) -> String { "https://x.com/thsottiaux/status/\(id)" }
+        let text = "[pinned](\("https://x.com/thsottiaux/status/2000000000000000001")) [other](https://x.com/other/status/\(newer)) [new](\("https://x.com/thsottiaux/status/2001000000000000001")?s=20) \("https://x.com/thsottiaux/status/2000000000000000001")"
+        XCTAssertEqual(TiboPostLink.extract(from: text, now: Date()).map(\.id), [newer, older])
+        for invalid in ["https://x.com.evil/thsottiaux/status/\(newer)", "https://evil@x.com/thsottiaux/status/\(newer)", "https://x.com:443/thsottiaux/status/\(newer)", "http://x.com/thsottiaux/status/\(newer)", "https://x.com/other/status/\(newer)", "https://x.com/thsottiaux/status/\(newer)/photo/1"] {
+            XCTAssertNil(TiboPostLink.parse(invalid))
+        }
+        XCTAssertTrue(TiboPostLink.extract(from: url("18446744073709551615"), now: Date()).isEmpty)
+    }
     func testStrictAuthorPageAndLoginValidation() throws {
         let p = post("2000000000000000001")
         XCTAssertEqual(try XTimelinePage(pageURL: "https://x.com/thsottiaux", loggedIn: true, posts: [p, p]).validated(at: now), [p])
