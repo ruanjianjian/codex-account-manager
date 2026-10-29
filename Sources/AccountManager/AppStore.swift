@@ -159,6 +159,10 @@ enum SlotStatus: Equatable {
             status[slot.id] = collectorRetry.paused.contains(slot.id) ? .failure(CollectorRetryPolicy.message) : .disconnected
         }
         if preview { loadPreview(); return }
+        if let from = UserDefaults.standard.string(forKey: "update.from") {
+            UserDefaults.standard.removeObject(forKey: "update.from")
+            if from != updater.current { banner = "已自动更新到 \(updater.current)。"; record("已从 \(from) 自动更新到 \(updater.current)。") }
+        }
         if sharedDesktop.interruptedSwitch { banner = "旧版本留下了一次未完成的桌面切换。新版不再改 Codex 登录；如账号不对，请在 Codex 里重新登录。" }
         loadResetMonitor()
         loadPersonalX()
@@ -515,6 +519,7 @@ enum SlotStatus: Equatable {
         }
         checkResetAnnouncements()
         retryResetRefresh()
+        keepUpToDate()
         if let started = loginStarted, now.timeIntervalSince(started) > 600 {
             Task { await cancelLogin(); banner = "本次登录等待已超时。已有连接未受影响，可重新连接。" }
         }
@@ -691,6 +696,54 @@ enum SlotStatus: Equatable {
         } catch {
             banner = "迁移未完成，仍使用原存储。" + ((error as? DesktopSwitchFailure)?.localizedDescription ?? "请检查钥匙串授权或文件权限后重试。")
             return false
+        }
+    }
+    let updater = AppUpdater()
+    @Published var updateCaption = ""
+    var autoUpdate: Bool { UserDefaults.standard.object(forKey: "update.auto") as? Bool ?? true }
+    func setAutoUpdate(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "update.auto")
+        if on { nextUpdateCheck = .distantPast } else { pendingUpdate = nil; updateCaption = "" }
+        onChange?()
+    }
+    private var nextUpdateCheck = Date().addingTimeInterval(
+        Double(ProcessInfo.processInfo.environment["CODEX_ACCOUNTS_UPDATE_AFTER"] ?? "") ?? 120)
+    private var pendingUpdate: String?
+    private var updating = false
+    /// Never in the middle of a Codex request, a sign-in or a storage migration.
+    private var idleForUpdate: Bool { routingActivity.active.isEmpty && loginSlotID == nil && !migratingCredentials && launchingDesktop.isEmpty }
+    /// Checks every six hours; a newer release is installed at the next idle moment.
+    private func keepUpToDate() {
+        guard !preview, persistenceEnabled, autoUpdate, !updating else { return }
+        if let tag = pendingUpdate { installWhenIdle(tag); return }
+        guard Date() >= nextUpdateCheck else { return }
+        nextUpdateCheck = Date().addingTimeInterval(6 * 3600)
+        Task {
+            do {
+                if let tag = try await updater.newerRelease() {
+                    pendingUpdate = tag; updateCaption = "发现 \(tag)，空闲时自动更新"
+                    installWhenIdle(tag)
+                } else { updateCaption = "已是最新 · \(updater.current)" }
+            } catch { updateCaption = "检查更新失败，稍后再试" }
+        }
+    }
+    private func installWhenIdle(_ tag: String) {
+        guard idleForUpdate, !updating else { return }
+        updating = true; updateCaption = "正在更新到 \(tag)…"
+        Task {
+            do {
+                let app = try await updater.prepare(tag)
+                // A request may have started while downloading: wait for the next idle moment.
+                guard idleForUpdate else { updating = false; return }
+                try await updater.install(app)
+                UserDefaults.standard.set(updater.current, forKey: "update.from")
+                record("自动更新到 \(tag)，正在重启管家。")
+                NSApp.terminate(nil)
+            } catch {
+                updating = false; pendingUpdate = nil; nextUpdateCheck = Date().addingTimeInterval(3600)
+                updateCaption = "自动更新没完成：\(error.localizedDescription)，一小时后再试"
+                record(updateCaption)
+            }
         }
     }
     /// The private build's data folder (CODEX_ACCOUNTS_IMPORT_FROM points elsewhere for testing).
