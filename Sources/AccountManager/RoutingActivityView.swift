@@ -1,7 +1,8 @@
 import SwiftUI
 import AccountCore
 
-/// Original native rendering; flow-map design inspired by Magpie.
+/// Original native rendering; flow-map design inspired by Magpie, drawn as pixel art:
+/// each request is a pixel rocket with a flickering exhaust that explodes on arrival.
 struct RoutingActivityView: View {
     @ObservedObject var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -40,7 +41,9 @@ struct RoutingActivityView: View {
                     Text("连接账号后显示请求流向").font(.caption).foregroundStyle(.white.opacity(0.7)).padding(12)
                 } else {
                     ScrollView(.vertical) {
-                        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !visible || reduceMotion || activity.active.isEmpty)) { tick in
+                        // Full rate only while rockets fly or a burst plays; a slow idle twinkle otherwise.
+                        let lively = !activity.active.isEmpty || Date().timeIntervalSince(activity.changedAt) < 0.6
+                        TimelineView(.animation(minimumInterval: lively ? 1.0 / 30 : 1.0 / 8, paused: !visible || reduceMotion)) { tick in
                             flow(time: tick.date.timeIntervalSinceReferenceDate)
                         }.frame(height: CGFloat(max(3, slots.count)) * 23)
                     }.frame(height: flowHeight).scrollIndicators(.hidden)
@@ -68,49 +71,26 @@ struct RoutingActivityView: View {
             let destinationX = w * 0.60
             ZStack(alignment: .topLeading) {
                 Canvas { context, _ in
-                    let start = CGPoint(x: 42, y: h / 2)
-                    var input = Path(); input.move(to: start); input.addLine(to: center)
-                    context.stroke(input, with: .color(.white.opacity(0.15)), lineWidth: 1)
-                    if !activity.active.isEmpty {
-                        moving(input, color: mint, time: time, context: &context)
-                    }
-                    for (index, slot) in slots.enumerated() {
-                        let y = CGFloat(index) * 23 + 11.5
-                        let end = CGPoint(x: destinationX, y: y)
-                        var line = Path(); line.move(to: center)
-                        line.addCurve(to: end, control1: CGPoint(x: w * 0.49, y: center.y), control2: CGPoint(x: w * 0.47, y: y))
-                        context.stroke(line, with: .color(.white.opacity(0.12)), lineWidth: 1)
-                        let active = activity.count(for: slot.id) > 0
-                        let recent = activity.lastAccount == slot.id && activity.lastKind == "completed"
-                        let color = CoverPalette.all[index % CoverPalette.all.count].ink
-                        if active { moving(line, color: color, time: time + Double(index) * 0.19, context: &context) }
-                        else if recent { context.stroke(line, with: .color(color.opacity(0.4)), lineWidth: 1.4) }
-                    }
+                    drawPixels(&context, width: w, height: h, center: center, destinationX: destinationX, time: time)
                 }.accessibilityHidden(true)
-                VStack(spacing: 4) {
-                    Image(systemName: "terminal").font(.system(size: 16, weight: .medium))
-                    Text("Codex").font(.system(size: 9, weight: .medium))
-                }.frame(width: 44, height: 42).background(paper).position(x: 28, y: h / 2)
-                ZStack {
-                    Circle().fill(paper).frame(width: 35, height: 35)
-                    Circle().stroke(mint.opacity(activity.active.isEmpty ? 0.25 : 0.8), lineWidth: 1).frame(width: 35, height: 35)
-                    Image(systemName: "arrow.triangle.branch").font(.system(size: 15)).foregroundStyle(mint)
-                }.position(center).accessibilityLabel("本机网关")
+                Text("CODEX").font(.system(size: 7, weight: .heavy, design: .monospaced)).foregroundStyle(.white.opacity(0.7))
+                    .position(x: 28, y: h / 2 + 16)
+                Color.clear.frame(width: 24, height: 24).position(center)
+                    .accessibilityElement().accessibilityLabel("本机网关")
                 ForEach(Array(slots.enumerated()), id: \.element.id) { index, slot in
                     let count = activity.count(for: slot.id)
                     let color = CoverPalette.all[index % CoverPalette.all.count].ink
                     HStack(spacing: 5) {
-                        Circle().fill(count > 0 ? color : .white.opacity(0.25)).frame(width: 5, height: 5)
                         Text(slot.displayName).font(.system(size: 10, weight: count > 0 ? .semibold : .regular)).lineLimit(1)
                         Spacer(minLength: 0)
-                        if count > 0 { Text("\(count)").font(.system(size: 9, weight: .bold)).foregroundStyle(color) }
+                        if count > 0 { Text("\(count)").font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundStyle(color) }
                         else if activity.lastAccount == slot.id && activity.lastKind == "completed" {
                             Image(systemName: "checkmark").font(.system(size: 8)).foregroundStyle(mint)
                         } else if activity.lastAccount == slot.id && ["refused", "network_error", "interrupted", "rejected"].contains(activity.lastKind) {
                             Image(systemName: "exclamationmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.orange)
                         }
                     }.padding(.horizontal, 6).frame(width: max(40, w - destinationX - 8), height: 21)
-                        .background(count > 0 ? color.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 4))
+                        .background(count > 0 ? color.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 2))
                         .foregroundStyle(.white.opacity(count > 0 ? 1 : 0.65))
                         .position(x: (destinationX + w - 8) / 2, y: CGFloat(index) * 23 + 11.5)
                         .help(slot.displayName + (count > 0 ? " · \(count) 个请求处理中" : ""))
@@ -120,17 +100,79 @@ struct RoutingActivityView: View {
         }.padding(.horizontal, 6)
     }
 
-    private func moving(_ path: Path, color: Color, time: TimeInterval, context: inout GraphicsContext) {
-        context.stroke(path, with: .color(color.opacity(0.4)), lineWidth: 1.4)
+    private static let pixel: CGFloat = 3
+    private static let terminal = ["#######", "#.....#", "#.#...#", "#..#..#", "#.#.###", "#.....#", "#######"]
+    private static let chip = [".#.#.#.", "#######", "#.....#", "##.#.##", "#.....#", "#######", ".#.#.#."]
+    private static let server = ["#####", "#...#", "#####", "#...#", "#####"]
+    private static let flame = [Color(red: 1, green: 0.82, blue: 0.4), Color(red: 1, green: 0.42, blue: 0.21)]
+
+    private func drawPixels(_ context: inout GraphicsContext, width w: CGFloat, height h: CGFloat, center: CGPoint, destinationX: CGFloat, time: TimeInterval) {
+        let p = Self.pixel
+        func grid(_ value: CGFloat) -> Int { Int((value / p).rounded()) }
+        func cell(_ c: PixelRoute.Cell, _ color: Color, _ alpha: Double = 1) {
+            context.fill(Path(CGRect(x: CGFloat(c.x) * p, y: CGFloat(c.y) * p, width: p, height: p)), with: .color(color.opacity(alpha)))
+        }
+        func sprite(_ rows: [String], at c: PixelRoute.Cell, _ color: Color, _ alpha: Double = 1) {
+            for (j, row) in rows.enumerated() {
+                for (i, ch) in row.enumerated() where ch == "#" {
+                    cell(.init(c.x - row.count / 2 + i, c.y - rows.count / 2 + j), color, alpha)
+                }
+            }
+        }
+        func ink(_ index: Int) -> Color { CoverPalette.all[index % CoverPalette.all.count].ink }
+        let busy = !activity.active.isEmpty
+        for y in stride(from: 0, to: Int(h / p), by: 2) {
+            context.fill(Path(CGRect(x: 0, y: CGFloat(y) * p, width: w, height: 1)), with: .color(.white.opacity(0.025)))
+        }
+        let mid = grid(h / 2), bend = grid(w * 0.48), end = grid(destinationX - 22)
+        let rows = slots.indices.map { grid(CGFloat($0) * 23 + 11.5) }
+        let routes = rows.map { y in
+            PixelRoute.path([.init(grid(44), mid), .init(bend, mid), .init(bend, y), .init(end, y)])
+        }
+        for (index, route) in routes.enumerated() {
+            let lit = activity.count(for: slots[index].id) > 0
+            for (k, c) in route.enumerated() where k % 2 == 0 { cell(c, lit ? ink(index) : .white, lit ? 0.4 : 0.12) }
+        }
+        sprite(Self.terminal, at: .init(grid(28), mid), Color(white: 0.85))
+        sprite(Self.chip, at: .init(grid(center.x), mid), mint, busy ? 1 : 0.45)
+        if busy && Int(time * 4) % 2 == 0 {
+            cell(.init(grid(center.x) - 2, mid - 3), .white); cell(.init(grid(center.x) + 2, mid + 3), .white)
+        }
+        for (index, y) in rows.enumerated() {
+            sprite(Self.server, at: .init(end + 3, y), ink(index), activity.count(for: slots[index].id) > 0 ? 1 : 0.45)
+        }
         guard !reduceMotion else { return }
-        // A travelling highlight with a gentle trail, one passage every 1.8 seconds.
-        let phase = time.truncatingRemainder(dividingBy: 1.8) / 1.8
-        for segment in 0..<8 {
-            let end = phase - Double(segment) * 0.012
-            guard end > 0 else { continue }
-            context.stroke(path.trimmedPath(from: max(0, end - 0.014), to: end),
-                           with: .color(color.opacity(1 - Double(segment) / 9)),
-                           style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
+        for (request, account) in activity.active.sorted(by: { $0.key < $1.key }) {
+            guard let index = slots.firstIndex(where: { $0.id == account }), routes[index].count > 2 else { continue }
+            let route = routes[index]
+            let k = PixelRoute.head(time: time, offset: PixelRoute.offset(for: request), count: route.count)
+            let head = route[k], next = route[min(route.count - 1, k + 1)]
+            let dx = next.x - head.x, dy = next.y - head.y
+            for step in 1...4 where (Int(time * 30) + step * 7 + k) % 3 != 0 {
+                cell(route[max(0, k - step)], Self.flame[step < 2 ? 0 : 1], 0.9 - Double(step) * 0.18)
+            }
+            cell(head, ink(index))
+            cell(.init(head.x + dx, head.y + dy), .white)
+            cell(.init(head.x - dy, head.y - dx), ink(index))
+            cell(.init(head.x + dy, head.y + dx), ink(index))
+        }
+        if let last = activity.lastAccount, let index = slots.firstIndex(where: { $0.id == last }),
+           let target = routes[index].last, let burst = PixelRoute.burst(age: Date().timeIntervalSince(activity.changedAt)) {
+            let failed = ["refused", "network_error", "interrupted", "rejected"].contains(activity.lastKind)
+            if failed || activity.lastKind == "completed" {
+                let n = failed ? 8 : 12
+                for j in 0..<n {
+                    let angle = Double(j) / Double(n) * 2 * .pi
+                    let c = PixelRoute.Cell(target.x + Int((cos(angle) * burst.radius).rounded()), target.y + Int((sin(angle) * burst.radius).rounded()))
+                    cell(c, failed ? .red : (j % 2 == 0 ? .white : ink(index)), burst.alpha)
+                }
+            }
+        }
+        if !busy {
+            let tick = Int(time * 6)
+            for (index, route) in routes.enumerated() where !route.isEmpty && (tick / 5 + index) % 3 == 0 {
+                cell(route[(tick + index * 7) % route.count], mint, 0.35)
+            }
         }
     }
 }
