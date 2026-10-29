@@ -443,3 +443,32 @@ func TestUntypedEventStreamStillStreams(t *testing.T) {
 	}
 	t.Fatal("usage not recorded", events)
 }
+
+// The helper has no proxy environment variables; it must follow the Mac's own proxy settings.
+func TestSystemProxyFollowsMacSettings(t *testing.T) {
+	https := "<dictionary> {\n  HTTPEnable : 0\n  HTTPSEnable : 1\n  HTTPSPort : 7890\n  HTTPSProxy : 127.0.0.1\n}"
+	if u := parseSystemProxy(https); u == nil || u.String() != "http://127.0.0.1:7890" {
+		t.Fatal("https proxy", u)
+	}
+	socks := "<dictionary> {\n  SOCKSEnable : 1\n  SOCKSPort : 1080\n  SOCKSProxy : 10.0.0.2\n}"
+	if u := parseSystemProxy(socks); u == nil || u.String() != "socks5://10.0.0.2:1080" {
+		t.Fatal("socks proxy", u)
+	}
+	if u := parseSystemProxy("<dictionary> {\n  HTTPSEnable : 0\n  HTTPSProxy : 127.0.0.1\n  HTTPSPort : 7890\n}"); u != nil {
+		t.Fatal("disabled proxy used", u)
+	}
+	reads := 0
+	p := &systemProxy{read: func() string { reads++; return https }}
+	r := httptest.NewRequest("POST", "https://chatgpt.com/backend-api/codex/responses", nil)
+	for i := 0; i < 3; i++ {
+		if u, _ := p.For(r); u == nil || u.Host != "127.0.0.1:7890" {
+			t.Fatal("request not proxied", u)
+		}
+	}
+	if reads != 1 {
+		t.Fatal("settings re-read on every request", reads)
+	}
+	if u, _ := p.For(httptest.NewRequest("GET", "http://127.0.0.1:9/x", nil)); u != nil {
+		t.Fatal("loopback sent through the proxy", u)
+	}
+}

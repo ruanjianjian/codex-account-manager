@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Bump with every release: this script is served from main, and asking api.github.com for the newest
 # release fails on networks that reach github.com but not the API.
-LATEST="v0.4.7-beta.1"
+LATEST="v0.4.8-beta.1"
 REPO="ruanjianjian/codex-account-manager"
 APP_NAME="Codex Accounts Beta.app"
 BUNDLE_ID="io.github.ruanjianjian.codex-accounts"

@@ -76,6 +76,7 @@ type gateway struct {
 func newGateway(read func() (config, error), base string, emit func(event)) *gateway {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 90 * time.Second
+	tr.Proxy = newSystemProxy().For
 	return &gateway{config: read, base: base, client: &http.Client{Transport: tr, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, emit: emit, sticky: map[string]binding{}, rest: map[string]time.Time{}}
 }
 
