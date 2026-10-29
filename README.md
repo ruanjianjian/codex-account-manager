@@ -2,7 +2,19 @@
 
 A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 管家：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
-**测试版 v0.4.0-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+**测试版 v0.4.1-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+
+## 一行安装
+
+先登录 Codex 桌面，再在终端运行：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/main/scripts/get.sh | bash
+```
+
+脚本下载最新安装包并核对 SHA-256，旧版移到废纸篓（账号和设置保留），装进 `~/Applications` 后打开。管家会自己完成三步：登录凭据改存本机私有目录（与 Codex 默认方式一致，文件不加密）、连接 Codex 桌面正在登录的账号、开启自动路由。看到「完成」后重启一次 Codex。
+
+用命令行下载的文件没有浏览器的“来自互联网”标记，所以不会出现 macOS 的手动放行步骤；安装包仍未经 Apple 公证，可信度来自本仓库和 SHA-256 校验。只想安装、不自动设置：`CODEX_ACCOUNTS_SKIP_SETUP=1`。
 
 独立社区工具，与 OpenAI、X 无隶属或背书关系。所有账号都由使用者自行登录；不附带账号、API Key、Cookie 或任何个人登录数据。
 
@@ -44,9 +56,9 @@ A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的
 
 退出旧的 **Codex Accounts Beta.app**，将旧应用移到废纸篓，再放入新版。**不要删除 `CodexAccountsPublic` 数据目录**，已连接账号和偏好会保留。升级不会自动迁移凭据；需到设置主动选择。私人构建使用独立目录，不会自动导入。
 
-## 安装下载版
+## 手动安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.0-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.1-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 **Codex Accounts Beta.app** 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。装了 Codex 桌面（ChatGPT App）就自带 CLI，本版用其内置 CLI 0.165 验证；旧版 CLI 可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
