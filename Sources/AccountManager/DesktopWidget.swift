@@ -35,10 +35,22 @@ private struct ResizeSurface: NSViewRepresentable {
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
-private struct DragSurface: NSViewRepresentable {
+struct DragSurface: NSViewRepresentable {
+    /// Moves the window itself rather than through performDrag, which a desktop-level panel ignores.
     final class Handle: NSView {
+        private var start: (mouse: NSPoint, origin: NSPoint)?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-        override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+        // Global event position (y grows downward), independent of where the window has moved to.
+        private func global(_ event: NSEvent) -> NSPoint? { event.cgEvent?.location }
+        override func mouseDown(with event: NSEvent) {
+            guard let window, let mouse = global(event) else { return }
+            start = (mouse, window.frame.origin)
+        }
+        override func mouseDragged(with event: NSEvent) {
+            guard let window, let start, let mouse = global(event) else { return }
+            window.setFrameOrigin(NSPoint(x: start.origin.x + mouse.x - start.mouse.x, y: start.origin.y - (mouse.y - start.mouse.y)))
+        }
+        override func mouseUp(with event: NSEvent) { start = nil }
     }
     func makeNSView(context: Context) -> NSView {
         let view = Handle(); view.toolTip = "拖动组件"; return view
@@ -82,13 +94,11 @@ struct DesktopWidgetView: View {
                 Button { present(.settings) } label: { Image(systemName: "slider.horizontal.3") }
                     .help("设置").accessibilityLabel("打开设置")
             }.buttonStyle(.plain).font(.system(size: 13))
-            if store.gatewayEnabled {
-                HStack {
-                    Image(systemName: store.gatewayReady ? "arrow.triangle.branch" : "exclamationmark.circle")
-                    Text(store.gatewayCaption).lineLimit(2)
-                    Spacer(minLength: 0)
-                    if !store.gatewayPreferred.isEmpty { Button("自动") { store.selectGatewayAccount("") }.buttonStyle(.plain) }
-                }.font(.system(size: 10, weight: .medium)).foregroundStyle(store.gatewayReady ? Color.secondary : Color.orange)
+            if store.gatewayEnabled { RoutingActivityView(store: store) }
+            if let alert = store.resetAlert {
+                Link(destination: alert.url) {
+                    Label(alert.text, systemImage: "bolt.fill").font(.system(size: 11, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                }.foregroundStyle(Color(red: 0.85, green: 0.38, blue: 0.05)).help("打开 Tibo 原帖")
             }
             if let banner = store.banner {
                 HStack(alignment: .top) {
@@ -142,12 +152,12 @@ struct DesktopWidgetView: View {
             HStack(alignment: .top, spacing: 5) {
                 VStack(alignment: .leading, spacing: 3) {
                     if let profile = store.profileCaption(slot) { Text(profile).font(.system(size: 10, weight: .medium)).lineLimit(1) }
-                    Button { store.openAccountDesktop(slot.id) } label: {
+                    Button { store.chooseAccount(slot.id) } label: {
                         Text(slot.displayName).font(.system(size: 13, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
                     }.buttonStyle(.plain)
-                        .disabled(store.preview || store.loginSlotID != nil || !store.launchingDesktop.isEmpty || slot.expectedAccountID == nil)
-                        .help(store.desktopActionLabel(slot.id))
-                        .accessibilityLabel("\(slot.displayName) · \(store.desktopActionLabel(slot.id))")
+                        .disabled(store.preview || slot.expectedAccountID == nil)
+                        .help(store.accountActionLabel(slot.id))
+                        .accessibilityLabel("\(slot.displayName) · \(store.accountActionLabel(slot.id))")
                 }
                 Spacer(minLength: 0)
                 Menu { accountActions(slot) } label: {
@@ -212,8 +222,8 @@ struct DesktopWidgetView: View {
     }
 
     @ViewBuilder private func accountActions(_ slot: AccountSlot) -> some View {
-        Button(store.desktopActionLabel(slot.id)) { store.openAccountDesktop(slot.id) }
-            .disabled(store.preview || store.loginSlotID != nil || !store.launchingDesktop.isEmpty || slot.expectedAccountID == nil)
+        Button(store.accountActionLabel(slot.id)) { store.chooseAccount(slot.id) }
+            .disabled(store.preview || slot.expectedAccountID == nil)
         Divider()
         Button("额度与 reset 明细…") { present(.details(slot.id)) }.disabled(slot.snapshot == nil)
         Button("名称与浏览器…") { present(.edit(slot)) }

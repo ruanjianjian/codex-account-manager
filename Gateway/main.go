@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -38,17 +39,22 @@ type account struct {
 	Reset     float64 `json:"reset"`
 }
 type config struct {
-	Key       string    `json:"key"`
-	Preferred string    `json:"preferred"`
-	Accounts  []account `json:"accounts"`
+	Key       string           `json:"key"`
+	Preferred string           `json:"preferred"`
+	Accounts  []account        `json:"accounts"`
+	Clients   []clientIdentity `json:"clients,omitempty"`
 }
 type event struct {
+	Request string `json:"request,omitempty"`
 	Session string `json:"session,omitempty"`
 	Time    string `json:"time,omitempty"`
 	Kind    string `json:"kind"`
 	Account string `json:"account,omitempty"`
 	Status  int    `json:"status,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	Route   string `json:"route,omitempty"`
 	Input   int64  `json:"input,omitempty"`
+	Cached  int64  `json:"cached,omitempty"`
 	Output  int64  `json:"output,omitempty"`
 }
 type binding struct {
@@ -56,6 +62,7 @@ type binding struct {
 	Until time.Time
 }
 type gateway struct {
+	native     *nativeAuth
 	config     func() (config, error)
 	base       string
 	client     *http.Client
@@ -70,6 +77,19 @@ func newGateway(read func() (config, error), base string, emit func(event)) *gat
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 90 * time.Second
 	return &gateway{config: read, base: base, client: &http.Client{Transport: tr, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, emit: emit, sticky: map[string]binding{}, rest: map[string]time.Time{}}
+}
+
+type requestTraceKey struct{}
+type requestTrace struct{ id, session string }
+
+var requestSequence atomic.Uint64
+
+func (g *gateway) emitRequest(r *http.Request, e event) {
+	if trace, ok := r.Context().Value(requestTraceKey{}).(requestTrace); ok {
+		e.Request = trace.id
+		e.Session = trace.session
+	}
+	g.emit(e)
 }
 func readConfig(path string) (config, error) {
 	var c config
@@ -98,10 +118,42 @@ func fail(w http.ResponseWriter, status int, msg string) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": msg, "type": "gateway_error"}})
 }
+
+// Route shape only, for diagnostics: no query string, and any segment that could be an
+// identifier (digits, long, or unusual characters) becomes ":id".
+func routeName(r *http.Request) string {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) > 6 {
+		parts = append(parts[:6], "...")
+	}
+	for i, p := range parts {
+		if p == "..." {
+			continue
+		}
+		version := len(p) == 2 && p[0] == 'v' && p[1] >= '0' && p[1] <= '9'
+		if !version && (len(p) > 32 || strings.IndexFunc(p, func(c rune) bool { return !(c == '_' || c == '-' || c >= 'a' && c <= 'z') }) >= 0) {
+			parts[i] = ":id"
+		}
+	}
+	method := r.Method
+	if len(method) > 8 || strings.IndexFunc(method, func(c rune) bool { return c < 'A' || c > 'Z' }) >= 0 {
+		method = "OTHER"
+	}
+	return method + " /" + strings.Join(parts, "/")
+}
 func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Every gateway-side refusal is recorded with a fixed reason; upstream refusals emit "refused".
+	reject := func(status int, reason, account, msg string) {
+		e := event{Kind: "rejected", Status: status, Reason: reason, Account: account}
+		if reason == "unsupported_route" {
+			e.Route = routeName(r)
+		}
+		g.emitRequest(r, e)
+		fail(w, status, msg)
+	}
 	c, err := g.config()
 	if err != nil {
-		fail(w, 503, "Account pool unavailable; refresh accounts in the menu-bar app.")
+		reject(503, "pool_unavailable", "", "Account pool unavailable; refresh accounts in the menu-bar app.")
 		return
 	}
 	host := r.Host
@@ -110,11 +162,25 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := net.ParseIP(host)
 	if (host != "localhost" && (ip == nil || !ip.IsLoopback())) || r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" {
-		fail(w, 403, "Local non-browser clients only.")
+		reject(403, "non_local_client", "", "Local non-browser clients only.")
 		return
 	}
-	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	authorization := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, "Bearer ") || len(authorization) <= 7 {
+		fail(w, 401, "Invalid local gateway key.")
+		return
+	}
+	key := strings.TrimPrefix(authorization, "Bearer ")
 	nativeAccount := ""
+	if g.native != nil {
+		var authErr error
+		c, nativeAccount, authErr = g.native.authenticate(c, key, r.Header.Get("chatgpt-account-id"))
+		if authErr != nil {
+			g.emit(event{Kind: "local_auth_unavailable", Status: 503})
+			fail(w, 503, "Local credential registry unavailable; check account manager diagnostics.")
+			return
+		}
+	}
 	for _, a := range c.Accounts {
 		if a.Expires > float64(time.Now().Unix()) && len(a.Access) > 0 && subtle.ConstantTimeCompare([]byte(key), []byte(a.Access)) == 1 {
 			if id := r.Header.Get("chatgpt-account-id"); id != "" && id != a.AccountID {
@@ -125,6 +191,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if nativeAccount == "" && subtle.ConstantTimeCompare([]byte(key), []byte(c.Key)) != 1 {
+		g.emit(event{Kind: "local_auth_rejected", Status: 401})
 		fail(w, 401, "Invalid local gateway key.")
 		return
 	}
@@ -135,6 +202,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/backend-api/codex"), "/v1")
 	if path == "/responses" && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		// Expected on every turn: the client falls back to HTTP. Not a refusal worth recording.
 		fail(w, http.StatusUpgradeRequired, "Use HTTP Responses streaming.")
 		return
 	}
@@ -143,7 +211,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != "POST" || (path != "/responses" && path != "/responses/compact") {
-		fail(w, 404, "Unsupported gateway route.")
+		reject(404, "unsupported_route", "", "Unsupported gateway route.")
 		return
 	}
 	compressed := http.MaxBytesReader(w, r.Body, 32<<20)
@@ -153,7 +221,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "zstd":
 		decoder, e := zstd.NewReader(compressed, zstd.WithDecoderMaxMemory(64<<20), zstd.WithDecoderConcurrency(1))
 		if e != nil {
-			fail(w, 400, "Invalid compressed request.")
+			reject(400, "invalid_body", "", "Invalid compressed request.")
 			return
 		}
 		defer decoder.Close()
@@ -161,27 +229,27 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "gzip":
 		decoder, e := gzip.NewReader(compressed)
 		if e != nil {
-			fail(w, 400, "Invalid compressed request.")
+			reject(400, "invalid_body", "", "Invalid compressed request.")
 			return
 		}
 		defer decoder.Close()
 		reader = decoder
 	default:
-		fail(w, 415, "Unsupported request encoding.")
+		reject(415, "invalid_body", "", "Unsupported request encoding.")
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(reader, (32<<20)+1))
 	if len(body) > 32<<20 {
-		fail(w, 413, "Decoded request too large.")
+		reject(413, "invalid_body", "", "Decoded request too large.")
 		return
 	}
 	if err != nil {
-		fail(w, 413, "Request too large.")
+		reject(413, "invalid_body", "", "Request too large.")
 		return
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(body, &obj) != nil || obj == nil {
-		fail(w, 400, "Expected JSON object.")
+		reject(400, "invalid_body", "", "Expected JSON object.")
 		return
 	}
 	// Codex subscriptions require ephemeral Responses and streaming.
@@ -202,23 +270,30 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if session == "" {
 		session = r.Header.Get("x-codex-session-id")
 	}
+	r = r.WithContext(context.WithValue(r.Context(), requestTraceKey{}, requestTrace{
+		id: fmt.Sprintf("%d-%d", time.Now().UnixNano(), requestSequence.Add(1)), session: session,
+	}))
+	defer func() { g.emitRequest(r, event{Kind: "finished"}) }()
 	// Account-bound server state must never be silently stripped to enable fallback.
 	bound := bytes.Contains(body, []byte(`"encrypted_content"`)) || bytes.Contains(body, []byte(`"encrypted_function_args"`)) || len(obj["previous_response_id"]) > 0 || path == "/responses/compact"
-	// Native old threads supply their original logged-in account. Keep sealed state there.
-	if bound && nativeAccount != "" && session != "" {
-		g.mu.Lock()
-		if old := g.sticky[session]; old.ID == "" || old.Until.Before(time.Now()) {
-			g.sticky[session] = binding{ID: nativeAccount, Until: time.Now().Add(24 * time.Hour)}
-		}
-		g.mu.Unlock()
+	// A sealed thread the gateway never served is assumed to belong to the account the desktop is
+	// logged in to (old direct threads). Only a successful reply records that owner, so a wrong
+	// guess is not pinned once the desktop is back on the right account.
+	guess := ""
+	if session != "" {
+		guess = nativeAccount
 	}
-	candidates, stuck := g.candidates(c, session, bound)
-	if stuck {
-		fail(w, 409, "This conversation contains account-bound state. Keep its account or start a new conversation to use another account.")
+	candidates, stuck := g.candidates(c, session, bound, guess)
+	switch {
+	case stuck == "sealed_owner_unknown":
+		reject(409, stuck, "", "This conversation contains account-bound history from an unknown account; it was not sent to another account. Start a new conversation.")
 		return
-	}
-	if len(candidates) == 0 {
-		fail(w, 503, "No available account. Refresh or reconnect accounts in Codex Accounts.")
+	case stuck != "":
+		owner := g.owner(session, guess)
+		reject(409, stuck, owner, "This conversation's account-bound history must stay on account "+owner+", which is unavailable now (quota, cooldown or expired login). Wait for it to recover or start a new conversation.")
+		return
+	case len(candidates) == 0:
+		reject(503, "no_available_account", "", "No available account. Refresh or reconnect accounts in Codex Accounts.")
 		return
 	}
 	for _, a := range candidates {
@@ -227,23 +302,23 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		req, err := g.request(r, path, body, a)
 		if err != nil {
-			fail(w, 502, "Cannot create upstream request.")
+			reject(502, "upstream_request_error", a.ID, "Cannot create upstream request.")
 			return
 		}
-		g.emit(event{Kind: "routing", Account: a.ID, Session: session})
+		g.emitRequest(r, event{Kind: "routing", Account: a.ID, Session: session})
 		res, err := g.client.Do(req)
 		if err != nil {
 			if r.Context().Err() != nil {
 				return
 			}
-			g.emit(event{Kind: "network_error", Account: a.ID})
+			g.emitRequest(r, event{Kind: "network_error", Account: a.ID})
 			g.cool(a.ID, time.Now().Add(15*time.Second))
 			continue
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body.Close()
-			g.emit(event{Kind: "refused", Account: a.ID, Status: res.StatusCode, Session: session})
+			g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: res.StatusCode, Session: session})
 			if retryable(res.StatusCode) {
 				g.cool(a.ID, retryAt(res.Header, b))
 				continue
@@ -251,8 +326,9 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, res.StatusCode, "Upstream rejected the request; account "+a.ID+". No retry was made.")
 			return
 		}
-		if !strings.Contains(res.Header.Get("Content-Type"), "text/event-stream") {
-			b, e := io.ReadAll(io.LimitReader(res.Body, 32<<20))
+		reply := bufio.NewReaderSize(res.Body, 64<<10)
+		if !eventStream(res.Header.Get("Content-Type"), reply) {
+			b, e := io.ReadAll(io.LimitReader(reply, 32<<20))
 			res.Body.Close()
 			if e != nil {
 				fail(w, 502, "Upstream reply interrupted.")
@@ -263,10 +339,10 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(res.StatusCode)
 			w.Write(b)
 			g.remember(session, a.ID)
-			g.emit(event{Kind: "completed", Account: a.ID, Session: session})
+			g.emitRequest(r, event{Kind: "completed", Account: a.ID, Session: session})
 			return
 		}
-		committed, retry := g.stream(w, r, res, a, session)
+		committed, retry := g.stream(w, r, reply, a, session)
 		res.Body.Close()
 		if committed {
 			return
@@ -276,7 +352,19 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	fail(w, 503, "All available accounts declined this request. Refresh accounts or wait for quota reset.")
+	reject(503, "all_accounts_declined", "", "All available accounts declined this request. Refresh accounts or wait for quota reset.")
+}
+
+// The Codex backend streams SSE without a Content-Type header, so the first bytes decide too.
+func eventStream(contentType string, body *bufio.Reader) bool {
+	if strings.Contains(contentType, "text/event-stream") {
+		return true
+	}
+	if contentType != "" {
+		return false
+	}
+	head, _ := body.Peek(6)
+	return bytes.HasPrefix(head, []byte("event:")) || bytes.HasPrefix(head, []byte("data:")) || bytes.HasPrefix(head, []byte(":"))
 }
 func retryable(code int) bool { return code == 401 || code == 403 || code == 429 || code >= 500 }
 func retryAt(h http.Header, b []byte) time.Time {
@@ -305,7 +393,9 @@ func retryAt(h http.Header, b []byte) time.Time {
 	}
 	return time.Now().Add(time.Duration(seconds * float64(time.Second)))
 }
-func (g *gateway) candidates(c config, session string, bound bool) ([]account, bool) {
+
+// Returns the accounts to try in order, or why a sealed conversation cannot be served.
+func (g *gateway) candidates(c config, session string, bound bool, guess string) ([]account, string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
@@ -313,33 +403,58 @@ func (g *gateway) candidates(c config, session string, bound bool) ([]account, b
 	if old.Until.Before(now) {
 		old = binding{}
 	}
+	if old.ID == "" && bound {
+		old.ID = guess
+	}
+	// Without a recorded owner, sealed histories cannot safely be assigned, not even to Preferred.
+	if bound && old.ID == "" {
+		return nil, "sealed_owner_unknown"
+	}
 	var out []account
 	for _, a := range c.Accounts {
-		if c.Preferred != "" && a.ID != c.Preferred {
+		if a.Access == "" || a.Expires <= float64(now.Unix()+30) || g.rest[a.ID].After(now) {
 			continue
 		}
-		if a.Access == "" || a.Expires <= float64(now.Unix()+30) || (!a.Available && !(bound && old.ID == a.ID)) || g.rest[a.ID].After(now) {
+		// Sealed state stays with its owner, even when another account is preferred or quota looks spent.
+		if bound {
+			if a.ID == old.ID {
+				out = append(out, a)
+			}
 			continue
 		}
-		if bound && old.ID != "" && old.ID != a.ID {
-			continue
+		if a.Available {
+			out = append(out, a)
 		}
-		out = append(out, a)
+	}
+	// A conversation stays on its own account so its prompt cache survives; Preferred orders
+	// new conversations and takes over only when that account is unavailable.
+	rank := func(a account) int {
+		switch a.ID {
+		case old.ID:
+			return 0
+		case c.Preferred:
+			return 1
+		}
+		return 2
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].ID == old.ID {
-			return true
-		}
-		if out[j].ID == old.ID {
-			return false
+		if ri, rj := rank(out[i]), rank(out[j]); ri != rj {
+			return ri < rj
 		}
 		return out[i].Reset > 0 && (out[j].Reset == 0 || out[i].Reset < out[j].Reset)
 	})
-	// Without a recorded owner, legacy sealed histories cannot safely be assigned.
-	if bound && old.ID == "" && c.Preferred == "" {
-		return nil, true
+	if bound && len(out) == 0 {
+		return nil, "sealed_owner_unavailable"
 	}
-	return out, bound && len(out) == 0
+	return out, ""
+}
+func (g *gateway) owner(session, guess string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if b := g.sticky[session]; b.ID != "" && b.Until.After(time.Now()) {
+		return b.ID
+	}
+	return guess
 }
 func (g *gateway) remember(session, id string) {
 	if session == "" {
@@ -418,8 +533,7 @@ func (g *gateway) models(w http.ResponseWriter, r *http.Request, c config) {
 }
 
 // Buffer only the prelude, never replay a stream after text or a tool call escaped.
-func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Response, a account, session string) (bool, bool) {
-	reader := bufio.NewReaderSize(res.Body, 64<<10)
+func (g *gateway) stream(w http.ResponseWriter, r *http.Request, reader *bufio.Reader, a account, session string) (bool, bool) {
 	var pre bytes.Buffer
 	committed := false
 	completed := false
@@ -432,7 +546,10 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Respo
 				Type     string `json:"type"`
 				Response struct {
 					Usage struct {
-						Input  int64 `json:"input_tokens"`
+						Input        int64 `json:"input_tokens"`
+						InputDetails struct {
+							Cached int64 `json:"cached_tokens"`
+						} `json:"input_tokens_details"`
 						Output int64 `json:"output_tokens"`
 					} `json:"usage"`
 				} `json:"response"`
@@ -444,13 +561,13 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Respo
 					content = strings.Contains(v.Type, "delta") || strings.Contains(v.Type, "output_item") || v.Type == "response.completed"
 					if v.Type == "response.completed" {
 						completed = true
-						g.emit(event{Kind: "completed", Account: a.ID, Input: v.Response.Usage.Input, Output: v.Response.Usage.Output})
+						g.emitRequest(r, event{Kind: "completed", Account: a.ID, Input: v.Response.Usage.Input, Cached: v.Response.Usage.InputDetails.Cached, Output: v.Response.Usage.Output})
 					}
 				}
 			}
 			if failed && !committed {
 				g.cool(a.ID, time.Now().Add(time.Minute))
-				g.emit(event{Kind: "refused", Account: a.ID, Status: 502})
+				g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: 502})
 				return false, true
 			}
 			if !committed {
@@ -480,7 +597,7 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Respo
 		}
 		if err != nil {
 			if committed && !completed && r.Context().Err() == nil {
-				g.emit(event{Kind: "interrupted", Account: a.ID})
+				g.emitRequest(r, event{Kind: "interrupted", Account: a.ID})
 				io.WriteString(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"Upstream stream interrupted; not replayed to avoid duplicate tool execution.\"}}\n\n")
 			}
 			return committed, !committed
@@ -490,6 +607,7 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Respo
 func main() {
 	path := flag.String("config", "", "private pool configuration")
 	addr := flag.String("listen", "127.0.0.1:18455", "loopback listener")
+	desktopAuth := flag.String("desktop-auth", "", "trusted local desktop auth file (never a request parameter)")
 	flag.Parse()
 	host, _, e := net.SplitHostPort(*addr)
 	if e != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
@@ -522,6 +640,20 @@ func main() {
 		}
 	}
 	g := newGateway(func() (config, error) { return readConfig(*path) }, upstream, emit)
+	if *desktopAuth != "" {
+		g.native = &nativeAuth{path: *desktopAuth, cache: filepath.Join(filepath.Dir(*path), "client-auth-hashes.json")}
+		c, err := readConfig(*path)
+		if err == nil {
+			err = g.native.validateDesktop(c)
+		}
+		if err == nil {
+			_, _, err = g.native.authenticate(c, "", "")
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "local credential registry unavailable")
+			os.Exit(1)
+		}
+	}
 	g.stickyFile = filepath.Join(filepath.Dir(*path), "session-accounts.json")
 	if st, err := os.Lstat(g.stickyFile); err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0077 == 0 && st.Size() < 1<<20 {
 		if data, err := os.ReadFile(g.stickyFile); err == nil {

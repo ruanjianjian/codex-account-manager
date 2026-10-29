@@ -22,7 +22,7 @@ import AccountCore
     func openTibo() {
         guard !fetching else { return }
         navigationFinished = false; navigationFailed = false
-        webView.load(URLRequest(url: DeepSeekProbe.profileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+        webView.load(URLRequest(url: TiboPostLink.profileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { navigationFinished = true }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { navigationFailed = true }
@@ -44,7 +44,7 @@ import AccountCore
         defer { fetching = false }
         if reload || webView.url == nil {
             navigationFinished = false; navigationFailed = false
-            webView.load(URLRequest(url: DeepSeekProbe.profileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+            webView.load(URLRequest(url: TiboPostLink.profileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
         }
         var lastError: Error = PersonalXError.noPosts
         for _ in 0..<30 {
@@ -65,6 +65,15 @@ import AccountCore
         throw lastError
     }
     func stop() { webView.stopLoading() }
+    /// Whether the visible page is signed in and on Tibo's profile. Reads no post content.
+    func pageState() async -> (loggedIn: Bool, onTibo: Bool)? {
+        guard !fetching, !webView.isLoading, webView.url != nil else { return nil }
+        let script = #"JSON.stringify({l: !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"], [data-testid="AppTabBar_Profile_Link"]'), p: location.pathname})"#
+        guard let text = try? await webView.evaluateJavaScript(script) as? String,
+              let value = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return nil }
+        let path = (value["p"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+        return (value["l"] as? Bool == true, path == "thsottiaux" && webView.url?.host?.lowercased() == "x.com")
+    }
     // Only visible DOM data is read. Nested quoted tweets do not supply the author's identity or announcement.
     private static let readScript = #"""
     (() => {
@@ -107,19 +116,25 @@ struct PersonalXLoginView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("个人 X · Tibo 监控").font(.headline)
+                Text("Tibo 重置提醒").font(.headline)
+                Text(store.personalX.enabled ? store.personalXCaption : (store.personalXTesting ? "正在读取主页…" : "用邮箱或用户名登录 X，登录后自动开始监控"))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
-                Button("打开 Tibo 主页") { store.personalXBrowser.openTibo() }.disabled(store.personalXTesting)
-                Button("登录后测试并开启监控") { store.testAndEnablePersonalX() }.disabled(store.personalXTesting)
+                if store.personalX.enabled { Button("断开 X") { store.disablePersonalX() }.disabled(store.personalXTesting) }
                 Button("完成", action: onClose)
             }.padding(.horizontal, 16).padding(.top, 12)
-            Text(store.personalXTesting ? "正在读取主页…" : store.personalXCaption)
-                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16)
-            Text("使用自己的 X 账号登录一次，登录态由本机浏览器保存。请用邮箱/用户名登录；不支持外部 Google/Apple 登录跳转。成功读取后每分钟检查，关掉此窗口继续运行。")
-                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).fixedSize(horizontal: false, vertical: true)
+            if !store.personalX.enabled, let error = store.personalX.lastError {
+                Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
+            }
             PersonalXWebView(browser: store.personalXBrowser)
         }.frame(width: min(1000, (NSScreen.main?.visibleFrame.width ?? 1100) - 80), height: min(780, (NSScreen.main?.visibleFrame.height ?? 900) - 100))
             .onAppear { store.personalXBrowser.interactive = true; if store.personalXBrowser.webView.url == nil { store.personalXBrowser.openTibo() } }
             .onDisappear { store.personalXBrowser.interactive = false }
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(3))
+                    await store.autoConnectPersonalX()
+                }
+            }
     }
 }

@@ -31,4 +31,24 @@ final class WidgetPlacementTests: XCTestCase {
             XCTAssertEqual(origin.y + size.height, area.maxY - 8)
         }
     }
+    func testEmbeddedComponentSitsBesideNativeWidgetsAndStaysOnScreen() {
+        let area = CGRect(x: 0, y: 0, width: 1920, height: 1056)
+        let size = CGSize(width: 549, height: 335)
+        let origin = WidgetPlacement.embeddedOrigin(panelSize: size, visibleFrame: area)
+        XCTAssertEqual(origin, CGPoint(x: 378, y: 1056 - 335 - 10))
+        let narrow = CGRect(x: -800, y: 0, width: 800, height: 600)
+        let fitted = WidgetPlacement.embeddedOrigin(panelSize: size, visibleFrame: narrow)
+        XCTAssertTrue(narrow.contains(CGRect(origin: fitted, size: size)))
+    }
+    func testSettingsOpenBesideDashboardWithTopsAligned() {
+        let area = CGRect(x: 0, y: 0, width: 1920, height: 1056)
+        let size = CGSize(width: 400, height: 640)
+        let dashboard = CGRect(x: 915, y: 1056 - 38 - 733, width: 439, height: 733)
+        let left = WidgetPlacement.besideOrigin(windowSize: size, anchor: dashboard, visibleFrame: area)
+        XCTAssertEqual(left.x + size.width, dashboard.minX - 10)
+        XCTAssertEqual(left.y + size.height, dashboard.maxY)
+        let atLeftEdge = CGRect(x: 8, y: 300, width: 439, height: 733)
+        XCTAssertEqual(WidgetPlacement.besideOrigin(windowSize: size, anchor: atLeftEdge, visibleFrame: area).x, atLeftEdge.maxX + 10)
+        XCTAssertEqual(WidgetPlacement.besideOrigin(windowSize: size, anchor: nil, visibleFrame: area), CGPoint(x: 760, y: 208))
+    }
 }

@@ -16,6 +16,12 @@ public struct ResetAnnouncement: Codable, Equatable {
         return URL(string: "https://x.com/thsottiaux/status/\(id)")
     }
     public var key: String { id + ":" + kind }
+    public var timing: ResetTiming? { date.map { ResetTiming.read(text, postedAt: $0) } }
+    /// A planned reset stays worth acting on until its time, or for a day when the post names none.
+    public func isUpcoming(at now: Date) -> Bool {
+        guard kind == "planned", let date, let timing else { return false }
+        return (timing.expectedAt ?? date.addingTimeInterval(24 * 3600)) > now
+    }
     public var eligible: Bool { ["planned", "reported_completed", "banked", "possible_reset"].contains(kind) && originalURL != nil && date != nil }
     public var label: String {
         if kind == "possible_reset" { return "重置相关新帖（待额度核验）" }
@@ -107,5 +113,57 @@ public enum ResetAnnouncementAPI {
               data.count <= 4_000_000 else { throw ResetFeedError.invalidResponse }
         let feed = try JSONDecoder().decode(ResetFeed.self, from: data)
         try feed.validate(); return feed
+    }
+}
+
+/// When a reset is expected, read only from the announcement's own wording. Never invents a time.
+public struct ResetTiming: Equatable {
+    public let expectedAt: Date?
+    /// Used when the post names no exact time, e.g. "明天".
+    public let hint: String
+    private static let amount = #"(\d+(?:\.\d+)?|half an?|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"#
+    private static let words: [String: Double] = ["a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+                                                  "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12]
+    public static func read(_ text: String, postedAt: Date) -> ResetTiming {
+        let value = text.lowercased()
+        let patterns = [#"\bin\s+(?:about\s+|around\s+|roughly\s+|approximately\s+|~\s*|the\s+next\s+)?"# + amount + #"\s*(hours?|hrs?|h|minutes?|mins?)\b"#,
+                        #"\b"# + amount + #"\s*(hours?|hrs?|minutes?|mins?)\s+from\s+now\b"#]
+        for pattern in patterns {
+            let regex = try! NSRegularExpression(pattern: pattern)
+            guard let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+                  let numberRange = Range(match.range(at: 1), in: value), let unitRange = Range(match.range(at: 2), in: value) else { continue }
+            let number = String(value[numberRange])
+            guard let count = number.hasPrefix("half") ? 0.5 : (Double(number) ?? words[number]), count > 0, count <= 72 else { continue }
+            let seconds = count * (value[unitRange].hasPrefix("h") ? 3600 : 60)
+            return ResetTiming(expectedAt: postedAt.addingTimeInterval(seconds), hint: "")
+        }
+        func has(_ expression: String) -> Bool { value.range(of: expression, options: .regularExpression) != nil }
+        if has(#"\bfew hours\b"#) { return ResetTiming(expectedAt: nil, hint: "几小时内") }
+        if has(#"\btomorrow\b"#) { return ResetTiming(expectedAt: nil, hint: "明天") }
+        if has(#"\b(tonight|later today|this (morning|afternoon|evening)|today)\b"#) { return ResetTiming(expectedAt: nil, hint: "今天晚些时候") }
+        if has(#"\bthis (week|weekend)\b"#) { return ResetTiming(expectedAt: nil, hint: "本周内") }
+        if has(#"\b(soon|shortly|momentarily)\b"#) { return ResetTiming(expectedAt: nil, hint: "即将") }
+        return ResetTiming(expectedAt: nil, hint: "")
+    }
+    public func describe(now: Date) -> String {
+        if let expectedAt { return expectedAt > now ? "约 " + Presentation.countdown(expectedAt, now: now) + "重置" : "已到预告的重置时间" }
+        return hint.isEmpty ? "重置时间未说明" : hint + "重置"
+    }
+}
+
+/// The system notification for a new announcement. Only explicit announcements notify.
+public enum ResetNotice {
+    public struct Account { public let name: String; public let remaining: Double
+        public init(name: String, remaining: Double) { self.name = name; self.remaining = remaining } }
+    public static func message(for post: ResetAnnouncement, accounts: [Account], now: Date) -> (title: String, body: String)? {
+        switch post.kind {
+        case "planned":
+            let left = accounts.filter { $0.remaining >= 10 }.sorted { $0.remaining > $1.remaining }.prefix(3)
+            let usage = left.isEmpty ? "各账号余量已不多。" : "还有余量：" + left.map { "\($0.name) \(Int($0.remaining))%" }.joined(separator: "、") + "，抓紧用。"
+            return ("Tibo 预告重置额度", (post.timing?.describe(now: now) ?? "重置时间未说明") + "。" + usage)
+        case "reported_completed": return ("Tibo 宣布额度已重置", "正在刷新全部账号额度。")
+        case "banked": return ("Tibo 发放 banked reset", "正在刷新各账号的 banked reset。")
+        default: return nil
+        }
     }
 }

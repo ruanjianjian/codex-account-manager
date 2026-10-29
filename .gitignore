@@ -29,3 +29,8 @@ config.gateway-applied
 
 requests.jsonl*
 session-accounts.json*
+
+# Private authentication diagnostics and isolated acceptance outputs
+client-auth-hashes.json
+private-snapshot/
+.isolated-acceptance/

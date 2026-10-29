@@ -1,5 +1,37 @@
 import Foundation
 
+public struct TiboPostLink: Codable, Equatable, Identifiable {
+    public static let profileURL = URL(string: "https://x.com/thsottiaux")!
+    public let id: String
+    public var url: URL { URL(string: "https://x.com/thsottiaux/status/\(id)")! }
+    // X snowflake timestamp is only an estimate, never proof of content freshness.
+    public var estimatedDate: Date? {
+        guard let number = UInt64(id) else { return nil }
+        return Date(timeIntervalSince1970: Double((number >> 22) + 1_288_834_974_657) / 1000)
+    }
+    public static func parse(_ text: String) -> TiboPostLink? {
+        guard let url = URL(string: text), url.scheme == "https",
+              ["x.com", "www.x.com", "twitter.com", "www.twitter.com"].contains(url.host?.lowercased() ?? ""),
+              url.user == nil, url.password == nil, url.port == nil else { return nil }
+        let parts = url.path.split(separator: "/")
+        guard parts.count == 3, parts[0].lowercased() == "thsottiaux", parts[1] == "status",
+              parts[2].range(of: #"^[0-9]{10,20}$"#, options: .regularExpression) != nil,
+              UInt64(parts[2]) != nil else { return nil }
+        return TiboPostLink(id: String(parts[2]))
+    }
+    public static func extract(from markdown: String, now: Date) -> [TiboPostLink] {
+        let detector = try! NSRegularExpression(pattern: #"https://[^\s<>\[\]()\"']+"#)
+        let range = NSRange(markdown.startIndex..., in: markdown)
+        var seen = Set<String>()
+        return detector.matches(in: markdown, range: range).compactMap { match -> TiboPostLink? in
+            guard let range = Range(match.range, in: markdown), let post = parse(String(markdown[range])),
+                  let date = post.estimatedDate, date >= Date(timeIntervalSince1970: 1_288_834_974),
+                  date <= now.addingTimeInterval(300), seen.insert(post.id).inserted else { return nil }
+            return post
+        }.sorted { UInt64($0.id)! > UInt64($1.id)! }
+    }
+}
+
 public struct XVisiblePost: Codable, Equatable, Identifiable {
     public let url: String
     public let text: String

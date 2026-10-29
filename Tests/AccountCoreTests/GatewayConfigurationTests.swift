@@ -2,6 +2,38 @@ import XCTest
 @testable import AccountCore
 
 final class GatewayConfigurationTests: XCTestCase {
+    func credential(_ id: String, _ nonce: String, expiry: Double = Date().timeIntervalSince1970 + 3600) throws -> Data {
+        let payload = try JSONSerialization.data(withJSONObject: ["exp": expiry, "nonce": nonce]).base64EncodedString().replacingOccurrences(of: "=", with: "").replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        return try JSONSerialization.data(withJSONObject: ["tokens": ["account_id": id, "access_token": "header.\(payload).signature", "refresh_token": "test-only"]])
+    }
+    func testActualDesktopIdentityOverridesHistoricalSelectionAndRefresh() throws {
+        let desktop = try credential("two", "desktop"), storedTwo = try credential("two", "slot"), storedOne = try credential("one", "slot")
+        XCTAssertEqual(try GatewayCredentialSource.select(expected: "two", desktop: desktop, stored: { storedTwo }).data, desktop)
+        XCTAssertEqual(try GatewayCredentialSource.select(expected: "one", desktop: desktop, stored: { storedOne }).data, storedOne)
+        let refreshed = try credential("two", "refresh")
+        XCTAssertEqual(try GatewayCredentialSource.select(expected: "two", desktop: refreshed, stored: { storedTwo }).data, refreshed)
+        let expired = try credential("two", "expired", expiry: 1)
+        XCTAssertEqual(try GatewayCredentialSource.select(expected: "two", desktop: expired, stored: { storedTwo }).data, storedTwo)
+        XCTAssertThrowsError(try GatewayCredentialSource.select(expected: "one", desktop: desktop, stored: { storedTwo }))
+    }
+    func testRestartKeyRotationPortChangeAndRepeatedToggleRestore() throws {
+        let home = try directory(), root = try directory(), path = home.appendingPathComponent("config.toml")
+        let original = Data("service_tier = \"priority\"\n[projects.\"/work\"]\ntrust_level = \"trusted\"\n".utf8)
+        try original.write(to: path)
+        let a = String(repeating: "a", count: 64), b = String(repeating: "b", count: 64)
+        try GatewayConfiguration(home: home, root: root).install(key: a, port: 18455)
+        let first = try Data(contentsOf: path)
+        try GatewayConfiguration(home: home, root: root).install(key: a, port: 18455)
+        XCTAssertEqual(try Data(contentsOf: path), first)
+        try GatewayConfiguration(home: home, root: root).install(key: b, port: 18456)
+        let text = try String(contentsOf: path)
+        XCTAssertTrue(text.contains("127.0.0.1:18456/backend-api/codex")); XCTAssertTrue(text.contains(b)); XCTAssertFalse(text.contains(a))
+        try GatewayConfiguration(home: home, root: root).restore()
+        XCTAssertEqual(try Data(contentsOf: path), original)
+        try GatewayConfiguration(home: home, root: root).install(key: a, port: 18455)
+        try GatewayConfiguration(home: home, root: root).restore()
+        XCTAssertEqual(try Data(contentsOf: path), original)
+    }
     func directory() throws -> URL {
         let d = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)

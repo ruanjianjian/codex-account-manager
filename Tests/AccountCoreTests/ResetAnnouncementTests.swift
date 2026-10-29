@@ -72,4 +72,28 @@ final class ResetAnnouncementTests: XCTestCase {
         XCTAssertTrue(try state.ingest(feed, accountIDs: ["a", "b"], now: now).isEmpty)
         XCTAssertNotNil(state.lastCheckedAt)
     }
+    func testTimingComesOnlyFromTheAnnouncementWording() {
+        let at = start
+        XCTAssertEqual(ResetTiming.read("Resetting Codex limits for everyone in about 5 hours", postedAt: at).expectedAt, at.addingTimeInterval(5 * 3600))
+        XCTAssertEqual(ResetTiming.read("We will reset all limits in two hours", postedAt: at).expectedAt, at.addingTimeInterval(7200))
+        XCTAssertEqual(ResetTiming.read("reset coming in 30 mins", postedAt: at).expectedAt, at.addingTimeInterval(1800))
+        XCTAssertEqual(ResetTiming.read("resetting usage 12h from now", postedAt: at).expectedAt, nil)
+        XCTAssertEqual(ResetTiming.read("resetting usage 12 hours from now", postedAt: at).expectedAt, at.addingTimeInterval(12 * 3600))
+        XCTAssertEqual(ResetTiming.read("We'll reset limits for everyone tomorrow", postedAt: at), ResetTiming(expectedAt: nil, hint: "明天"))
+        XCTAssertEqual(ResetTiming.read("Resetting limits for all Codex users later today", postedAt: at).hint, "今天晚些时候")
+        XCTAssertEqual(ResetTiming.read("Will reset limits for everyone", postedAt: at).describe(now: at), "重置时间未说明")
+        XCTAssertEqual(ResetTiming.read("in 5 hours", postedAt: at).describe(now: at.addingTimeInterval(3600)), "约 4 小时 0 分后重置")
+    }
+    func testPlannedNoticeNamesAccountsWithQuotaLeftAndExpires() {
+        var planned = post(kind: "planned")
+        planned = ResetAnnouncement(id: planned.id, text: "Resetting Codex limits for everyone in 3 hours", published_at: planned.published_at, url: planned.url, kind: "planned")
+        let now = start.addingTimeInterval(60)
+        let notice = ResetNotice.message(for: planned, accounts: [.init(name: "A", remaining: 0), .init(name: "B", remaining: 86), .init(name: "C", remaining: 71)], now: now)
+        XCTAssertEqual(notice?.title, "Tibo 预告重置额度")
+        XCTAssertEqual(notice?.body, "约 3 小时 0 分后重置。还有余量：B 86%、C 71%，抓紧用。")
+        XCTAssertTrue(planned.isUpcoming(at: now))
+        XCTAssertFalse(planned.isUpcoming(at: start.addingTimeInterval(3 * 3600 + 20)))
+        XCTAssertNil(ResetNotice.message(for: post(kind: "possible_reset"), accounts: [], now: now))
+        XCTAssertFalse(post().isUpcoming(at: now))
+    }
 }

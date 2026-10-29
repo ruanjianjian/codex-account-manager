@@ -29,10 +29,11 @@ enum SlotStatus: Equatable {
     @Published var loginSlotID: String?
     @Published var launchingDesktop = Set<String>()
     private let accountDesktop = AccountDesktopLauncher()
-    private lazy var sharedDesktop = SharedDesktopSwitcher(root: root)
+    private lazy var sharedDesktop = SharedDesktopLogin(root: root)
     @Published var migratingCredentials = false
     @Published var gatewayEnabled = UserDefaults.standard.bool(forKey: "gateway.enabled")
     @Published var gatewayReady = false
+    @Published var routingActivity = RoutingActivity()
     @Published var gatewayCaption = "自动路由未开启"
     @Published var gatewayAccount: String?
     @Published var gatewayPreferred = UserDefaults.standard.string(forKey: "gateway.preferred") ?? ""
@@ -42,8 +43,20 @@ enum SlotStatus: Equatable {
     @Published var now = Date()
     @Published var profiles: [ChromeProfile] = []
     @Published var loginAtLaunch = false
-    @Published var desktopVisible = UserDefaults.standard.object(forKey: "desktop.visible") as? Bool ?? true
+    // The tall dashboard now only stays up when pinned; otherwise it appears from the menu bar.
+    @Published var desktopVisible = UserDefaults.standard.bool(forKey: "desktop.pinned")
     @Published var desktopPinned = UserDefaults.standard.bool(forKey: "desktop.pinned")
+    /// Settings match the dashboard's height when opened beside it.
+    @Published var settingsHeight: CGFloat = 640
+    /// Wide component beside macOS's desktop widgets. Replaces the retired unpinned tall panel.
+    @Published var embeddedVisible: Bool = {
+        let defaults = UserDefaults.standard
+        if let value = defaults.object(forKey: "embedded.visible") as? Bool { return value }
+        // One-time migration: desktop.visible later only tracks the transient menu-bar panel.
+        let migrated = (defaults.object(forKey: "desktop.visible") as? Bool ?? true) && !defaults.bool(forKey: "desktop.pinned")
+        defaults.set(migrated, forKey: "embedded.visible")
+        return migrated
+    }()
     @Published var shortcutChoice = UserDefaults.standard.string(forKey: "desktop.shortcut") ?? "none"
     @Published var shortcutIssue: String?
     @Published var usageErrors: [String: String] = [:]
@@ -59,13 +72,6 @@ enum SlotStatus: Equatable {
     }
     private var personalXTask: Task<Void, Never>?
     private var personalXStorageAvailable = true
-    @Published var deepSeekHasKey = false
-    @Published var deepSeekTesting = false
-    @Published var deepSeekResult: DeepSeekProbeResult?
-    @Published var deepSeekError: String?
-    private var deepSeekKey = "" // Session only; never encoded, logged or read from Keychain.
-    private var deepSeekTask: Task<Void, Never>?
-    private var deepSeekGeneration = UUID()
     private var resetCheckTask: Task<Void, Never>?
     private var nextResetCheck = Date.distantPast
     private var resetCheckFailures = 0
@@ -73,6 +79,7 @@ enum SlotStatus: Equatable {
     private var resetNextAttempt: [String: Date] = [:]
     private var resetRefreshBusy = false
     private var resetStorageAvailable = true
+    private var lastAutoConnect = Date.distantPast
     private var nextUsagePoll: [String: Date] = [:]
 
     var onShortcutChange: (() -> Void)?
@@ -95,7 +102,7 @@ enum SlotStatus: Equatable {
     }
     private func pauseCollectorIfNeeded(_ error: Error, id: String) -> Bool {
         if collectorRetry.paused.contains(id) { return true }
-        guard collectorRetry.record(error, account: id, usesKeyring: !usesFileCredentials && sharedDesktop.selection?.slotID != id) else { return false }
+        guard collectorRetry.record(error, account: id, usesKeyring: !usesFileCredentials && desktopSelection?.slotID != id) else { return false }
         persistCollectorPause()
         clients.removeValue(forKey: id)?.stop()
         status[id] = .failure(CollectorRetryPolicy.message)
@@ -147,7 +154,7 @@ enum SlotStatus: Equatable {
             status[slot.id] = collectorRetry.paused.contains(slot.id) ? .failure(CollectorRetryPolicy.message) : .disconnected
         }
         if preview { loadPreview(); return }
-        if sharedDesktop.pending { banner = "上次切换未完成，已暂停采集。请退出 Codex 后点账号名称恢复登录。" }
+        if sharedDesktop.interruptedSwitch { banner = "旧版本留下了一次未完成的桌面切换。新版不再改 Codex 登录；如账号不对，请在 Codex 里重新登录。" }
         loadResetMonitor()
         loadPersonalX()
         checkResetAnnouncements()
@@ -156,14 +163,18 @@ enum SlotStatus: Equatable {
             self?.nextPoll.removeAll(); self?.refreshAll(); self?.checkResetAnnouncements(force: true)
         } }
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.tick() } })
+        desktopSlotSeen = desktopSelection?.slotID
         setupGateway()
         Task { await refreshSequentially() }
     }
     private func setupGateway() {
-        gateway.onEvent = { [weak self] kind, id, code in
+        gateway.onEvent = { [weak self] event in
             guard let self else { return }
+            self.routingActivity.receive(event)
+            let kind = event.kind, id = event.account, code = event.status
             switch kind {
             case "ready":
+                guard self.gatewayEnabled, self.gateway.running else { return }
                 do {
                     try self.gateway.install(); self.gatewayReady = true
                     self.gatewayCaption = "网关就绪 · 支持新旧会话，升级后重启 Codex"
@@ -176,28 +187,65 @@ enum SlotStatus: Equatable {
                 self.gatewayCaption = "账号暂不可用，正在尝试其他账号"
                 if let id, code == 401 { self.refresh(id) }
             case "interrupted": self.gatewayCaption = "回复中断，未重复执行；请在 Codex 中重试"
-            case "stopped": self.gatewayReady = false; self.gatewayCaption = "网关已停止 · 在设置中重试或关闭自动路由"
+            case "stopped": self.fallBackToDirect("网关已停止：\(event.reason ?? "进程已退出")")
+            case "rejected": if let caption = self.rejectionCaption(event) { self.gatewayCaption = caption }
+            case "local_auth_rejected": self.gatewayCaption = "桌面认证不匹配；请确认当前登录账号已连接到管家"
+            case "local_auth_unavailable": self.gatewayCaption = "本机认证记录不可用；保留现场并检查私有文件权限"
             default: break
             }
         }
         if gatewayEnabled || CommandLine.arguments.contains("--enable-gateway") { setGatewayEnabled(true, confirm: false) }
+        else if gateway.configuration.installed { fallBackToDirect("自动路由未开启") }
+    }
+    /// Never leave Codex pointed at a port nobody serves. Codex reloads config.toml for new and
+    /// resumed conversations, so restoring the direct provider recovers them; the toggle stays as chosen.
+    private func fallBackToDirect(_ reason: String) {
+        let wasInstalled = gateway.configuration.installed
+        // Restore first: if the provider table was edited elsewhere, a helper that still runs keeps serving.
+        do { try gateway.configuration.restore() } catch {
+            gatewayCaption = "\(reason) · \(error.localizedDescription) 请在 ~/.codex/config.toml 删除 openai_base_url 一行后重启 Codex。"
+            if gateway.running { return }
+            gatewayReady = false; gatewayAccount = nil; routingActivity.receive(.init(kind: "stopped"))
+            return
+        }
+        try? gateway.stop(restore: false)
+        gatewayReady = false; gatewayAccount = nil; routingActivity.receive(.init(kind: "stopped"))
+        // Conversations the gateway created on another account carry that account's sealed history.
+        gatewayCaption = wasInstalled ? "\(reason) · 已恢复直连；经网关在其他账号上开的会话需等网关恢复后再继续" : reason
+    }
+    /// Only reasons a Codex conversation can cause; local probes (for example a web page) never change the caption.
+    private func rejectionCaption(_ event: GatewayActivityEvent) -> String? {
+        let name = event.account.flatMap { slot($0)?.displayName } ?? "原账号"
+        switch event.reason {
+        case "sealed_owner_unavailable": return "旧会话含加密历史，只能用 \(name)；它暂不可用，请等额度恢复或新开会话"
+        case "sealed_owner_unknown": return "旧会话的原账号未知，网关未换号转发；请新开会话"
+        case "no_available_account", "all_accounts_declined": return "没有可用账号；刷新账号或等待额度重置"
+        case "unsupported_route": return "Codex 调用了网关尚未支持的接口，已记录到诊断日志"
+        default: return nil
+        }
     }
     private func updateGatewayPool() throws {
         guard usesFileCredentials else { throw GatewayConfigurationError.credentials }
+        let desktopURL = sharedDesktop.home.appendingPathComponent("auth.json")
+        let desktopData = desktopURL.standardizedFileURL == desktopURL.resolvingSymlinksInPath() ? try? Data(contentsOf: desktopURL) : nil
+        let identities = saved.accounts.compactMap { slot in slot.expectedAccountID.map { GatewayClientIdentity(id: slot.id, accountID: $0) } }
+        guard let desktopData, let desktop = try? DesktopCredential(desktopData),
+              identities.contains(where: { $0.accountID == desktop.accountID }),
+              let desktopValue = try? GatewayAccount(id: "desktop", credential: desktop, available: true, reset: 0),
+              desktopValue.expires > Date().timeIntervalSince1970 else { throw GatewayConfigurationError.desktopIdentity }
         var accounts: [GatewayAccount] = []
         for slot in saved.accounts {
             guard let expected = slot.expectedAccountID else { continue }
             if collectorRetry.paused.contains(slot.id) { continue }
             if case .wrongAccount = status[slot.id] { continue }
-            let home = sharedDesktop.selection?.slotID == slot.id ? sharedDesktop.home : root.appendingPathComponent("accounts/\(slot.id)")
-            let auth = home.appendingPathComponent("auth.json")
+            let auth = root.appendingPathComponent("accounts/\(slot.id)/auth.json")
             guard auth.standardizedFileURL == auth.resolvingSymlinksInPath(),
-                  let data = try? Data(contentsOf: auth), let credential = try? DesktopCredential(data, expected: expected) else { continue }
+                  let credential = try? GatewayCredentialSource.select(expected: expected, desktop: desktopData, stored: { try Data(contentsOf: auth) }) else { continue }
             let windows = slot.snapshot?.rates.windows ?? []
             let spent = windows.contains { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
             if let value = try? GatewayAccount(id: slot.id, credential: credential, available: !spent, reset: windows.compactMap(\.resetsAt).min() ?? 0) { accounts.append(value) }
         }
-        try gateway.save(accounts: accounts, preferred: gatewayPreferred)
+        try gateway.save(accounts: accounts, preferred: gatewayPreferred, clients: identities)
     }
     func setGatewayEnabled(_ enabled: Bool, confirm: Bool = true) {
         guard !preview, persistenceEnabled else { return }
@@ -209,14 +257,24 @@ enum SlotStatus: Equatable {
         }
         do {
             if enabled {
-                guard loginSlotID == nil, launchingDesktop.isEmpty, !sharedDesktop.pending else { throw GatewayConfigurationError.unavailable }
-                try updateGatewayPool(); try gateway.start(); gatewayCaption = "正在启动本机网关…"
+                do {
+                    guard loginSlotID == nil, launchingDesktop.isEmpty else { throw GatewayConfigurationError.unavailable }
+                    try updateGatewayPool(); try gateway.start()
+                } catch {
+                    // A gateway that already serves keeps serving; otherwise do not leave Codex on a dead port.
+                    if !gatewayReady { fallBackToDirect(error.localizedDescription) }
+                    throw error
+                }
+                gatewayCaption = "正在启动本机网关…"
             } else {
-                try gateway.stop(restore: true); gatewayReady = false; gatewayAccount = nil
+                try gateway.stop(restore: true); routingActivity.receive(.init(kind: "stopped")); gatewayReady = false; gatewayAccount = nil
                 gatewayCaption = "已恢复原配置 · 重启 Codex 生效"
             }
             gatewayEnabled = enabled; UserDefaults.standard.set(enabled, forKey: "gateway.enabled")
-        } catch { banner = error.localizedDescription; gatewayCaption = error.localizedDescription }
+        } catch {
+            banner = error.localizedDescription
+            if !enabled { gatewayCaption = error.localizedDescription }
+        }
     }
     func selectGatewayAccount(_ id: String) {
         gatewayPreferred = id; UserDefaults.standard.set(id, forKey: "gateway.preferred")
@@ -247,23 +305,43 @@ enum SlotStatus: Equatable {
         guard let path = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { throw ClientFailure.missingBinary }
         return URL(fileURLWithPath: path)
     }
+    /// Live desktop owner; selection.json alone goes stale after a login inside Codex.
+    private var desktopSelection: DesktopSelection? { sharedDesktop.selection(accounts: saved.accounts) }
+    private var desktopSlotSeen: String?
+    private var unenrolledDesktopTicks = 0
+    /// A collector created before a login inside Codex still points at its old home.
+    private func retireCollectorsIfDesktopChanged() {
+        let current = desktopSelection?.slotID
+        guard current != desktopSlotSeen else { return }
+        let affected = [desktopSlotSeen, current].compactMap { $0 }
+        guard affected.allSatisfy({ !busy.contains($0) && !usageLoading.contains($0) && loginSlotID != $0 }) else { return }
+        for id in affected { clients[id]?.stop(); clients.removeValue(forKey: id) }
+        desktopSlotSeen = current
+    }
     private func verifySharedIdentity(_ id: String) throws {
-        guard sharedDesktop.selection?.slotID == id else { return }
+        guard desktopSelection?.slotID == id else { return }
         guard let expected = slot(id)?.expectedAccountID,
-              sharedDesktop.selection?.accountID == expected else { throw ClientFailure.authentication }
+              desktopSelection?.accountID == expected else { throw ClientFailure.authentication }
         _ = try DesktopCredential(Data(contentsOf: sharedDesktop.home.appendingPathComponent("auth.json")), expected: expected)
     }
     private func client(_ id: String) throws -> RPCClient {
         try verifySharedIdentity(id)
-        if let client = clients[id] { return client }
+        let shared = desktopSelection?.slotID == id
+        let home = shared ? sharedDesktop.home : root.appendingPathComponent("accounts/\(id)")
+        // A login inside Codex can move the desktop between ticks: never reuse a client aimed at the
+        // other home (a logout sent to the shared home would sign the desktop out).
+        if let client = clients[id] {
+            if client.home.standardizedFileURL == home.standardizedFileURL { return client }
+            client.stop(); clients.removeValue(forKey: id)
+        }
         let client: RPCClient
-        if sharedDesktop.selection?.slotID == id {
+        if shared {
             let plan = try SharedDesktopPlan(home: sharedDesktop.home)
             let config = sharedDesktop.home.appendingPathComponent("config.toml")
             try plan.validateConfiguration(FileManager.default.fileExists(atPath: config.path) ? try String(contentsOf: config, encoding: .utf8) : "")
             client = RPCClient(home: sharedDesktop.home, executable: try Self.binary(), prepareHome: false, credentialStore: "file")
         } else {
-            client = RPCClient(home: root.appendingPathComponent("accounts/\(id)"), executable: try Self.binary(), credentialStore: usesFileCredentials ? "file" : "keyring")
+            client = RPCClient(home: home, executable: try Self.binary(), credentialStore: usesFileCredentials ? "file" : "keyring")
         }
         client.onNotification = { [weak self] method, params in self?.handleNotification(id, method, params) }
         clients[id] = client
@@ -279,7 +357,7 @@ enum SlotStatus: Equatable {
         }
     }
     private func syncUsage(_ id: String, force: Bool = false) async {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, !preview, persistenceEnabled, index(id) != nil, loginSlotID != id, !usageLoading.contains(id), !collectorRetry.paused.contains(id) else { return }
+        guard launchingDesktop.isEmpty, !preview, persistenceEnabled, index(id) != nil, loginSlotID != id, !usageLoading.contains(id), !collectorRetry.paused.contains(id) else { return }
         if !force, let next = nextUsagePoll[id], next > Date() { return }
         usageLoading.insert(id); defer { usageLoading.remove(id) }
         nextUsagePoll[id] = Date().addingTimeInterval(300)
@@ -321,7 +399,7 @@ enum SlotStatus: Equatable {
         for slot in saved.accounts { await sync(slot.id, force: force) }
     }
     private func sync(_ id: String, force: Bool = false) async {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, persistenceEnabled, !preview, !busy.contains(id), loginSlotID != id, index(id) != nil else { return }
+        guard launchingDesktop.isEmpty, persistenceEnabled, !preview, !busy.contains(id), loginSlotID != id, index(id) != nil else { return }
         guard !collectorRetry.paused.contains(id) else { return }
         if case .wrongAccount = status[id] { return }
         if !force, let next = nextPoll[id], next > Date() { return }
@@ -380,7 +458,17 @@ enum SlotStatus: Equatable {
     }
     private func tick() {
         now = Date(); onChange?()
-        if gatewayEnabled { do { try updateGatewayPool() } catch { gatewayCaption = error.localizedDescription } }
+        retireCollectorsIfDesktopChanged()
+        // Never rewrite the token snapshot while the gateway is stopped.
+        if gatewayEnabled && gateway.running {
+            // A login inside Codex to an account the manager does not know can only get 401s from the
+            // gateway. Seen three ticks in a row (not one half-written auth.json), go direct instead.
+            unenrolledDesktopTicks = sharedDesktop.desktopAccountID() != nil && desktopSelection == nil ? unenrolledDesktopTicks + 1 : 0
+            if unenrolledDesktopTicks >= 3 {
+                unenrolledDesktopTicks = 0
+                fallBackToDirect("Codex 当前登录的账号未连接到管家")
+            } else { do { try updateGatewayPool() } catch { gatewayCaption = error.localizedDescription } }
+        }
         checkResetAnnouncements()
         retryResetRefresh()
         if let started = loginStarted, now.timeIntervalSince(started) > 600 {
@@ -405,7 +493,7 @@ enum SlotStatus: Equatable {
     }
     func connect(_ id: String) { loginQueue.removeAll(); Task { await beginLogin(id) } }
     func canOpenConnection(_ id: String) -> Bool {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, canConnect, index(id) != nil else { return false }
+        guard launchingDesktop.isEmpty, canConnect, index(id) != nil else { return false }
         if loginSlotID == id { return loginURL != nil }
         return loginSlotID == nil && !busy.contains(id)
     }
@@ -419,8 +507,8 @@ enum SlotStatus: Equatable {
         if loginSlotID == id { reopenLogin() } else { connect(id) }
     }
     private func beginLogin(_ id: String) async {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, sharedDesktop.selection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
-            banner = "此账号正在用于桌面端。请先切换到其他账号并退出旧独立窗口，再重新授权。"; return
+        guard launchingDesktop.isEmpty, desktopSelection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
+            banner = "此账号正在用于桌面端。请先在 Codex 里登录其他账号并退出旧独立窗口，再重新授权。"; return
         }
         guard loginSlotID == nil, canConnect, !busy.contains(id), !usageLoading.contains(id), index(id) != nil else { return }
         resumeCollector(id)
@@ -468,7 +556,11 @@ enum SlotStatus: Equatable {
                     if status[id] == .connected { connectNext() } else { loginQueue.removeAll() }
                 }
             } else {
-                status[id] = .failure("登录未完成，请重新连接。已有账号不会退出。")
+                // Some Codex builds cannot write the Keychain when started by another app; the browser sign-in still succeeded.
+                let reason = (params["error"] as? String ?? "").lowercased()
+                let keyring = !usesFileCredentials && ["keyring", "secure storage", "keychain"].contains { reason.contains($0) }
+                status[id] = .failure(keyring ? "登录已完成，但系统钥匙串无法保存。请在“管家设置”改用本地文件存储后重新连接。"
+                                              : "登录未完成，请重新连接。已有账号不会退出。")
                 loginQueue.removeAll()
             }
         } else if method == "account/rateLimits/updated", !busy.contains(id), loginSlotID != id,
@@ -486,7 +578,7 @@ enum SlotStatus: Equatable {
         persist(); onChange?()
     }
     func addAccount(profile: String, alias: String) {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, canConnect, loginSlotID == nil, profiles.contains(where: { $0.id == profile }) else { return }
+        guard launchingDesktop.isEmpty, canConnect, loginSlotID == nil, profiles.contains(where: { $0.id == profile }) else { return }
         let id = "account-" + UUID().uuidString.lowercased()
         let clean = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         var slot = AccountSlot(id: id, name: "新账号", chromeProfile: profile)
@@ -495,8 +587,8 @@ enum SlotStatus: Equatable {
         connect(id)
     }
     func disconnect(_ id: String) async {
-        guard launchingDesktop.isEmpty, !sharedDesktop.pending, sharedDesktop.selection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
-            banner = "此账号正在用于桌面端。请先切换到其他账号并退出旧独立窗口，再移除连接。"; return
+        guard launchingDesktop.isEmpty, desktopSelection?.slotID != id, accountDesktop.running(root: root, id: id) == nil else {
+            banner = "此账号正在用于桌面端。请先在 Codex 里登录其他账号并退出旧独立窗口，再移除连接。"; return
         }
         guard canConnect, index(id) != nil, !busy.contains(id), !usageLoading.contains(id), loginSlotID == nil else { return }
         busy.insert(id); defer { busy.remove(id) }
@@ -550,64 +642,23 @@ enum SlotStatus: Equatable {
             }
         }
     }
-    func openAccountDesktop(_ id: String) {
-        if gatewayEnabled { selectGatewayAccount(id); gatewayCaption = "新请求优先使用 \(slot(id)?.displayName ?? "所选账号")"; return }
-        guard canConnect, let selected = slot(id), selected.expectedAccountID != nil,
-              loginSlotID == nil, launchingDesktop.isEmpty else { return }
-        // This check is read-only. Explain an existing blocker before asking for a restart.
-        do { try sharedDesktop.preflight(accounts: saved.accounts, legacy: accountDesktop) }
-        catch {
-            banner = (error as? DesktopSwitchFailure)?.localizedDescription
-                ?? (error as? DesktopLaunchError)?.localizedDescription
-                ?? "无法检查切换条件，未退出 Codex 或修改登录。"
-            return
+    /// An account-name click: with routing on it orders new conversations; otherwise offer to turn routing on.
+    func chooseAccount(_ id: String) {
+        guard !preview, let selected = slot(id), selected.expectedAccountID != nil else { return }
+        if !gatewayEnabled {
+            let alert = NSAlert(); alert.messageText = "开启自动账号路由？"
+            alert.informativeText = "开启后新会话优先使用 \(selected.displayName)，额度用完自动换其他账号。已打开的会话需重启 Codex 后才经过路由。"
+            alert.addButton(withTitle: "开启路由"); alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            setGatewayEnabled(true, confirm: false)
+            guard gatewayEnabled else { return }
         }
-        let alert = NSAlert()
-        alert.messageText = sharedDesktop.pending ? "恢复上次未完成的切换" : "切换到 \(selected.displayName)？"
-        alert.informativeText = "将退出并重新打开当前 Codex，保留原项目、会话文件和配置。正在执行的任务会被中断，请先等它们结束。此前打开的独立账号窗口需要先退出。"
-        alert.addButton(withTitle: sharedDesktop.pending ? "恢复登录" : "切换并重启")
-        alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        launchingDesktop.insert(id)
-        Task { [weak self] in
-            guard let self else { return }
-            defer {
-                self.launchingDesktop.remove(id)
-                self.nextPoll.removeAll(); self.nextUsagePoll.removeAll()
-                self.onChange?()
-            }
-            do {
-                try self.sharedDesktop.preflight(accounts: self.saved.accounts, legacy: self.accountDesktop)
-                self.banner = "正在等待当前额度查询结束，随后切换账号…"
-                // Freeze new polls, wait for in-flight calls, then stop every owned collector.
-                // Startup (20s) plus one request (35s) can exceed the old 40s deadline.
-                for _ in 0..<650 {
-                    if self.busy.isEmpty && self.usageLoading.isEmpty { break }
-                    try await Task.sleep(for: .milliseconds(100))
-                }
-                guard self.busy.isEmpty, self.usageLoading.isEmpty else { throw DesktopSwitchFailure.collectorsBusy }
-                self.banner = "正在停止管家的额度采集…"
-                for client in self.clients.values {
-                    guard await client.stopAndWait() else { throw DesktopSwitchFailure.collectorStop }
-                }
-                self.clients.removeAll()
-                self.banner = "正在切换并重新打开 Codex…"
-                try await self.sharedDesktop.switchAccount(slot: selected, accounts: self.saved.accounts, legacy: self.accountDesktop)
-                self.resumeCollector(id)
-                self.banner = "已重新打开 Codex，项目与会话目录保持原位。请核对当前账号为 \(selected.displayName)。"
-                self.nextPoll.removeAll(); self.nextUsagePoll.removeAll()
-            } catch {
-                self.banner = (error as? DesktopSwitchFailure)?.localizedDescription
-                    ?? (error as? DesktopLaunchError)?.localizedDescription
-                    ?? "切换未完成，已停止操作。请检查钥匙串权限后重试。"
-            }
-        }
+        selectGatewayAccount(id)
+        gatewayCaption = "新会话优先使用 \(selected.displayName)"
     }
-    func desktopActionLabel(_ id: String) -> String {
-        if gatewayEnabled { return "将此账号用于网关新请求" }
-        if !launchingDesktop.isEmpty { return "正在切换 Codex…" }
-        if sharedDesktop.pending { return "恢复未完成的切换…" }
-        return sharedDesktop.selection?.slotID == id ? "重新打开当前账号的 Codex…" : "切换到此账号（保留项目和会话）…"
+    func accountActionLabel(_ id: String) -> String {
+        guard gatewayEnabled else { return "开启自动路由并设为新会话优先…" }
+        return gatewayPreferred == id ? "新会话优先使用此账号" : "设为新会话优先"
     }
     private func openChrome(for id: String, url: URL) throws {
         guard let slot = slot(id) else { return }
@@ -742,6 +793,7 @@ enum SlotStatus: Equatable {
                 self.resetMonitor.enabled = true; self.resetMonitor.lastError = nil
                 self.resetMonitor.lastCheckedAt = now; self.resetMonitor.sourceUpdatedAt = now; self.resetMonitor.sourceStale = false
                 self.saveResetMonitor(); self.nextResetCheck = now.addingTimeInterval(60)
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
                 self.record("个人 X 监控已连接；每分钟检查 Tibo，新公告触发所有账号余量查询。")
             } catch is CancellationError { }
             catch { self.personalX.lastError = (error as? PersonalXError ?? .unavailable).localizedDescription; self.savePersonalX() }
@@ -759,6 +811,7 @@ enum SlotStatus: Equatable {
         if let signal = signals.last {
             resetNextAttempt.removeAll()
             record("个人 X 发现 Tibo \(signal.label)，刷新所有账号。原帖：\(signal.originalURL!.absoluteString)")
+            notifyReset(signal)
             retryResetRefresh()
         }
     }
@@ -783,26 +836,49 @@ enum SlotStatus: Equatable {
             resetMonitor.lastError = "公告监控记录无法保存，已停止监控；账号同步继续。"
         }
     }
+    /// Tells the user right away, with what is left to use before a planned reset wipes it.
+    private func notifyReset(_ signal: ResetAnnouncement) {
+        let accounts = saved.accounts.compactMap { slot -> ResetNotice.Account? in
+            // A global reset refills the longest window too; that is the quota that would go unused.
+            guard let window = slot.snapshot?.rates.windows.filter({ $0.remaining != nil })
+                .max(by: { ($0.windowDurationMins ?? 0) < ($1.windowDurationMins ?? 0) }) else { return nil }
+            return .init(name: slot.displayName, remaining: window.remaining!)
+        }
+        guard let notice = ResetNotice.message(for: signal, accounts: accounts, now: Date()) else { return }
+        let content = UNMutableNotificationContent(); content.title = notice.title; content.body = notice.body; content.sound = .default
+        if let link = signal.originalURL { content.userInfo = ["url": link.absoluteString] }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "reset-" + signal.key, content: content, trigger: nil))
+    }
+    /// A planned reset the user can still act on; shown on the widget and dashboard until it passes.
+    var resetAlert: (text: String, url: URL)? {
+        guard resetMonitor.enabled, let post = resetMonitor.lastAnnouncement, post.isUpcoming(at: now),
+              let timing = post.timing, let url = post.originalURL else { return nil }
+        return ("Tibo 预告" + timing.describe(now: now) + " · 抓紧用", url)
+    }
     func setResetMonitoring(_ enabled: Bool) {
         guard !preview, resetStorageAvailable else { return }
         resetMonitor.enabled = enabled; saveResetMonitor()
-        if enabled { checkResetAnnouncements(force: true) }
+        if enabled {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            checkResetAnnouncements(force: true)
+        }
         else { resetCheckGeneration = UUID(); resetCheckTask?.cancel(); resetCheckTask = nil; checkingResetAnnouncements = false }
     }
-    var resetMonitorCaption: String {
+    var resetSourceCaption: String {
         if !resetMonitor.enabled { return "已关闭" }
-        if let error = resetMonitor.lastError { return error }
-        if personalX.enabled { return personalXCaption }
-        if checkingResetAnnouncements { return "正在检查公告…" }
-        guard let checked = resetMonitor.lastCheckedAt else { return "等待首次检查" }
-        let status = resetMonitor.sourceStale ? "公告源有延迟" : "监控中"
-        return status + " · 上次检查 " + checked.formatted(date: .omitted, time: .shortened)
+        if personalXTesting { return "正在连接 X…" }
+        if let error = resetMonitor.lastError ?? (personalX.enabled ? personalX.lastError : nil) { return error }
+        if checkingResetAnnouncements { return "正在检查…" }
+        let source = personalX.enabled ? "已连接 X · 每分钟检查" : "未登录 X · 公共源" + (resetMonitor.sourceStale ? "有延迟" : "")
+        guard let checked = resetMonitor.lastCheckedAt else { return source }
+        return source + " · " + checked.formatted(date: .omitted, time: .shortened)
     }
-    var resetRefreshCaption: String? {
-        guard let post = resetMonitor.lastAnnouncement else { return nil }
-        let result = "已刷新 \(resetMonitor.refreshedAccountIDs.count)/\(resetMonitor.targetCount) 个账号"
-        let tail = resetMonitor.pendingAccountIDs.isEmpty ? "" : (resetMonitor.canRetry(at: now) ? " · 其余重试中" : " · 其余待正常同步或重新登录")
-        return post.label + " · " + result + tail
+    /// While the X window is open: once signed in, open Tibo's page and start monitoring without extra clicks.
+    func autoConnectPersonalX() async {
+        guard !preview, !personalX.enabled, !personalXTesting, Date().timeIntervalSince(lastAutoConnect) >= 8,
+              let page = await personalXBrowser.pageState(), page.loggedIn else { return }
+        lastAutoConnect = Date()
+        if page.onTibo { testAndEnablePersonalX() } else { personalXBrowser.openTibo() }
     }
     func checkResetAnnouncements(force: Bool = false) {
         guard !preview, persistenceEnabled, resetStorageAvailable, resetMonitor.enabled,
@@ -834,6 +910,7 @@ enum SlotStatus: Equatable {
                 if let signal = signals.last, self.resetStorageAvailable {
                     self.resetNextAttempt.removeAll()
                     self.record("检测到 Tibo \(signal.label)，开始刷新全部账号。原帖：\(signal.originalURL!.absoluteString)")
+                    self.notifyReset(signal)
                     self.retryResetRefresh()
                 }
             } catch is CancellationError { return }
@@ -877,6 +954,15 @@ enum SlotStatus: Equatable {
         desktopPinned = pinned; UserDefaults.standard.set(pinned, forKey: "desktop.pinned")
         onDesktopChange?()
     }
+    enum DesktopMode: String, CaseIterable { case off, embedded, floating }
+    var desktopMode: DesktopMode { desktopPinned ? .floating : (embeddedVisible ? .embedded : .off) }
+    func setDesktopMode(_ mode: DesktopMode) {
+        embeddedVisible = mode == .embedded; UserDefaults.standard.set(embeddedVisible, forKey: "embedded.visible")
+        desktopPinned = mode == .floating; UserDefaults.standard.set(desktopPinned, forKey: "desktop.pinned")
+        desktopVisible = desktopPinned; UserDefaults.standard.set(desktopVisible, forKey: "desktop.visible")
+        onDesktopChange?()
+    }
+    func setEmbeddedVisible(_ visible: Bool) { setDesktopMode(visible ? .embedded : (desktopPinned ? .floating : .off)) }
     func setNotifications(_ enabled: Bool) {
         guard !preview else { return }
         if !enabled { saved.notificationsEnabled = false; persist(); return }
@@ -892,46 +978,10 @@ enum SlotStatus: Equatable {
             if enabled && !loginAtLaunch { banner = "请在系统设置的登录项中允许 Codex Accounts Beta。" }
         } catch { banner = "登录时启动未设置成功，可在系统设置 → 通用 → 登录项中添加账号管家。" }
     }
-    func testDeepSeek(key input: String, referenceURL: String) {
-        guard !preview, !deepSeekTesting else { return }
-        do {
-            let key = try DeepSeekProbe.validatedKey(input.isEmpty ? deepSeekKey : input)
-            let reference = referenceURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard reference.isEmpty || TiboPostLink.parse(reference) != nil else { throw DeepSeekProbeError.invalidPostURL }
-            deepSeekKey = key; deepSeekHasKey = true
-            deepSeekError = nil; deepSeekResult = nil; deepSeekTesting = true
-            let generation = UUID(); deepSeekGeneration = generation
-            deepSeekTask = Task { [weak self] in
-                do {
-                    let result = try await DeepSeekProbe.run(key: key, referenceURL: reference)
-                    guard let self, self.deepSeekGeneration == generation else { return }
-                    self.deepSeekResult = result
-                    // Only public results, with credentials redacted, are retained for diagnosis.
-                    do {
-                        let file = self.root.appendingPathComponent("deepseek-test-result.json")
-                        try JSONEncoder().encode(result).write(to: file, options: .atomic)
-                        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-                    } catch { self.deepSeekError = "抓取完成，但未能保存本机测试结果。" }
-                } catch is CancellationError { }
-                catch {
-                    guard let self, self.deepSeekGeneration == generation else { return }
-                    self.deepSeekError = (error as? DeepSeekProbeError ?? .network).localizedDescription
-                }
-                guard let self, self.deepSeekGeneration == generation else { return }
-                self.deepSeekTesting = false; self.deepSeekTask = nil
-            }
-        } catch { deepSeekError = (error as? DeepSeekProbeError ?? .network).localizedDescription }
-    }
-    func cancelDeepSeekTest() {
-        deepSeekGeneration = UUID(); deepSeekTask?.cancel(); deepSeekTask = nil; deepSeekTesting = false
-    }
-    func clearDeepSeekKey() {
-        cancelDeepSeekTest(); deepSeekKey = ""; deepSeekHasKey = false; deepSeekError = nil
-    }
     func shutdown() {
-        try? gateway.stop(restore: false)
+        // Keep the routing preference for the next launch, but leave Codex on the direct provider while we are gone.
+        try? gateway.configuration.restore(); try? gateway.stop(restore: false)
         personalXTask?.cancel(); xBrowser?.stop()
-        clearDeepSeekKey()
         timer?.invalidate(); resetCheckTask?.cancel()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         observers.forEach { NotificationCenter.default.removeObserver($0) }
@@ -956,6 +1006,11 @@ enum SlotStatus: Equatable {
                let identity = try? JSONDecoder().decode(AccountIdentity.self, from: Data(#"{"type":"chatgpt","email":"demo@example.com","planType":"pro"}"#.utf8)) {
                 saved.accounts[i].snapshot = Snapshot(identity: identity, rates: rates); status[saved.accounts[i].id] = .connected
             }
+        }
+        if CommandLine.arguments.contains("--routing-preview") || Bundle.main.bundleIdentifier?.contains("routing-preview") == true {
+            gatewayEnabled = true; gatewayReady = true
+            routingActivity.receive(.init(kind: "routing", account: saved.accounts[0].id, request: "preview-a"))
+            routingActivity.receive(.init(kind: "routing", account: saved.accounts[2].id, request: "preview-b"))
         }
         saved.accounts[2].snapshot?.fetchedAt = Date().addingTimeInterval(-3600)
         status[saved.accounts[2].id] = .failure("网络暂时不可用；显示的是上次同步数据。")

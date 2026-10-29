@@ -24,6 +24,12 @@ final class CredentialFileStoreTests: XCTestCase {
             XCTAssertEqual(try FileManager.default.attributesOfItem(atPath:url.deletingLastPathComponent().path)[.posixPermissions] as? Int,0o700)
         }
     }
+    func testFreshInstallCanOptInBeforeFirstLogin() throws {
+        let store = try makeStore()
+        try store.activate([])
+        XCTAssertTrue(CredentialFileStore(root:store.root).enabled)
+        XCTAssertThrowsError(try store.activate([]), "a second activation must not rewrite the marker")
+    }
     func testWrongIdentityOrSymlinkCannotActivateBackend() throws {
         let store = try makeStore()
         try store.write(fixture("unrelated"),id:"account-a")

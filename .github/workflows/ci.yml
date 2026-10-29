@@ -9,8 +9,15 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Gateway/go.mod
+          cache-dependency-path: Gateway/go.sum
       - name: Toolchain
-        run: swift --version
+        run: swift --version && go version
+      - name: Gateway tests (no credentials)
+        working-directory: Gateway
+        run: go test -race -count=1 ./...
       - name: Unit tests (no credentials)
         run: swift test
       - name: Notarization workflow tests (offline)
