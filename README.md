@@ -14,7 +14,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 脚本下载最新安装包并核对 SHA-256，旧版移到废纸篓（账号和设置保留），装进 `~/Applications` 后打开。管家会自己完成三步：登录凭据改存本机私有目录（与 Codex 默认方式一致，文件不加密）、连接 Codex 桌面正在登录的账号、开启自动路由。看到「完成」后重启一次 Codex。
 
-用命令行下载的文件没有浏览器的“来自互联网”标记，所以不会出现 macOS 的手动放行步骤；安装包仍未经 Apple 公证，可信度来自本仓库和 SHA-256 校验。只想安装、不自动设置：`CODEX_ACCOUNTS_SKIP_SETUP=1`。
+用命令行下载的文件没有浏览器的“来自互联网”标记，所以不会出现 macOS 的手动放行步骤；安装包仍未经 Apple 公证，可信度来自本仓库和 SHA-256 校验。只想安装、不自动设置：`CODEX_ACCOUNTS_SKIP_SETUP=1`。需要代理才能上 GitHub 时，脚本会自动使用 macOS 的系统代理（终端已设置 `https_proxy` 时以终端为准），下载失败会自动重试。
 
 独立社区工具，与 OpenAI、X 无隶属或背书关系。所有账号都由使用者自行登录；不附带账号、API Key、Cookie 或任何个人登录数据。
 
