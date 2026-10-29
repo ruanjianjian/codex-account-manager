@@ -119,6 +119,14 @@ public struct DesktopSelection: Codable, Equatable {
     public let slotID: String
     public let accountID: String
     public init(slotID: String, accountID: String) { self.slotID = slotID; self.accountID = accountID }
+    /// selection.json is only a receipt: a login inside Codex makes it stale. The live desktop
+    /// login decides which slot owns the shared home; the receipt only breaks ties between slots.
+    public static func live(desktopAccountID: String?, receipt: DesktopSelection?, accounts: [AccountSlot]) -> DesktopSelection? {
+        guard let desktopAccountID, !desktopAccountID.isEmpty else { return nil }
+        let matches = accounts.filter { $0.expectedAccountID == desktopAccountID }
+        guard let slot = matches.first(where: { $0.id == receipt?.slotID }) ?? matches.first else { return nil }
+        return DesktopSelection(slotID: slot.id, accountID: desktopAccountID)
+    }
 }
 
 /// Injected ports allow crash/failure tests without reading any real credentials or apps.

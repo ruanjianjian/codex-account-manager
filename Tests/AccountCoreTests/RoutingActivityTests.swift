@@ -33,4 +33,13 @@ final class RoutingActivityTests: XCTestCase {
         XCTAssertTrue(activity.active.isEmpty)
         XCTAssertEqual(activity.completed, 0)
     }
+    func testGatewayRejectionDecodesReasonAndClearsTraffic() throws {
+        let line = #"{"request":"r1","kind":"rejected","status":409,"reason":"sealed_owner_unavailable","account":"a","time":"2026-10-29T00:00:00Z"}"#
+        let event = try JSONDecoder().decode(GatewayActivityEvent.self, from: Data(line.utf8))
+        XCTAssertEqual(event.reason, "sealed_owner_unavailable"); XCTAssertEqual(event.status, 409)
+        var activity = RoutingActivity()
+        activity.receive(.init(kind: "routing", account: "a", request: "r1"))
+        activity.receive(event)
+        XCTAssertTrue(activity.active.isEmpty); XCTAssertEqual(activity.lastKind, "rejected")
+    }
 }

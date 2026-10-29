@@ -12,9 +12,25 @@ import AccountCore
     private var selectionURL: URL { directory.appendingPathComponent("selection.json") }
     private var pendingURL: URL { directory.appendingPathComponent("pending") }
     var pending: Bool { FileManager.default.fileExists(atPath: pendingURL.path) }
-    var selection: DesktopSelection? {
+    private var receipt: DesktopSelection? {
         guard let data = try? Data(contentsOf: selectionURL) else { return nil }
         return try? JSONDecoder().decode(DesktopSelection.self, from: data)
+    }
+    /// The slot whose account is logged in to the shared desktop right now, if it is a known slot.
+    func selection(accounts: [AccountSlot]) -> DesktopSelection? {
+        DesktopSelection.live(desktopAccountID: desktopAccountID(), receipt: receipt, accounts: accounts)
+    }
+    private var cachedDesktop: (stamp: [String], accountID: String?)?
+    /// Views ask for this on every render: re-parse auth.json only after it changes on disk.
+    func desktopAccountID() -> String? {
+        let url = home.appendingPathComponent("auth.json")
+        guard url.standardizedFileURL.path == url.resolvingSymlinksInPath().path,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { cachedDesktop = nil; return nil }
+        let stamp = [attributes[.systemFileNumber], attributes[.size], (attributes[.modificationDate] as? Date)?.timeIntervalSince1970].map { "\($0 ?? "-")" }
+        if let cachedDesktop, cachedDesktop.stamp == stamp { return cachedDesktop.accountID }
+        let accountID = (try? Data(contentsOf: url)).flatMap { try? DesktopCredential($0).accountID }
+        cachedDesktop = (stamp, accountID)
+        return accountID
     }
     init(root: URL) { self.root = root }
 
@@ -54,7 +70,7 @@ import AccountCore
         for slot in accounts {
             guard let expected = slot.expectedAccountID else { continue }
             let credential: DesktopCredential
-            if selection?.slotID == slot.id {
+            if selection(accounts: accounts)?.slotID == slot.id {
                 credential = try DesktopCredential(Data(contentsOf: home.appendingPathComponent("auth.json")), expected: expected)
             } else { credential = try source(slot.id, expected: expected) }
             credentials.append((slot.id, credential))
@@ -141,12 +157,35 @@ import AccountCore
         }
         // Read and validate everything we can before asking an application to exit.
         let target = pending ? nil : try source(slot.id, expected: expected)
-        if !pending { _ = try DesktopCredential(Data(contentsOf: plan.auth)) }
+        let original = pending ? nil : try DesktopCredential(Data(contentsOf: plan.auth))
+        // Outgoing identity comes from the live login, never from a receipt made stale by a login inside Codex.
+        let previous = selection(accounts: accounts)
         guard directory.standardizedFileURL.path == directory.resolvingSymlinksInPath().path else { throw DesktopSwitchFailure.persistence }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
 
         let beforeApps = codexApps()
         for app in beforeApps { guard app.terminate() else { throw DesktopSwitchFailure.desktopStillRunning } }
+        do {
+            try await finishSwitch(slot: slot, accounts: accounts, expected: expected, target: target, previous: previous, plan: plan, appURL: appURL)
+        } catch {
+            // We closed Codex. If its original login is still (or again) in place, reopen it instead of leaving it closed.
+            if !beforeApps.isEmpty, !pending, let original, codexApps().isEmpty,
+               (try? DesktopCredential(Data(contentsOf: plan.auth)))?.accountID == original.accountID {
+                try? await launch(appURL)
+            }
+            throw error
+        }
+    }
+    private func launch(_ appURL: URL) async throws {
+        // Use the existing default Electron profile. Never pass --user-data-dir here.
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.environment = RPCClient.isolatedEnvironment(home: home, inherited: ProcessInfo.processInfo.environment)
+        do { _ = try await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) }
+        catch { throw DesktopSwitchFailure.launch }
+    }
+    private func finishSwitch(slot: AccountSlot, accounts: [AccountSlot], expected: String, target: DesktopCredential?, previous: DesktopSelection?,
+                              plan: SharedDesktopPlan, appURL: URL) async throws {
         for _ in 0..<60 {
             if stopped() { break }
             try await Task.sleep(for: .milliseconds(250))
@@ -185,14 +224,7 @@ import AccountCore
                 else if self.pending { try FileManager.default.removeItem(at: self.pendingURL) }
             },
             isDesktopStopped: { self.stopped() },
-            launch: {
-                // Use the existing default Electron profile. Never pass --user-data-dir here.
-                let configuration = NSWorkspace.OpenConfiguration()
-                configuration.activates = true
-                configuration.environment = RPCClient.isolatedEnvironment(home: self.home, inherited: ProcessInfo.processInfo.environment)
-                do { _ = try await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) }
-                catch { throw DesktopSwitchFailure.launch }
-            })
+            launch: { try await self.launch(appURL) })
         if pending {
             try DesktopSwitchTransaction.recover(ports: ports)
             // A recovery is a separate action; do not immediately overwrite the restored identity.
@@ -203,6 +235,6 @@ import AccountCore
         guard let target else { throw DesktopSwitchFailure.identity }
         let actualTarget = current.accountID == expected ? current : target
         try await DesktopSwitchTransaction.run(target: actualTarget,
-            selection: DesktopSelection(slotID: slot.id, accountID: expected), previous: selection, ports: ports)
+            selection: DesktopSelection(slotID: slot.id, accountID: expected), previous: previous, ports: ports)
     }
 }

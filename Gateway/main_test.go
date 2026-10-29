@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/klauspost/compress/zstd"
 	"io"
 	"net/http"
@@ -143,13 +144,13 @@ func TestExpiredAndPreferred(t *testing.T) {
 	c.Preferred = "two"
 	g := newGateway(func() (config, error) { return c, nil }, "", func(event) {})
 	xs, _ := g.candidates(c, "", false)
-	if len(xs) != 1 || xs[0].ID != "two" {
+	if len(xs) != 2 || xs[0].ID != "two" || xs[1].ID != "one" {
 		t.Fatal(xs)
 	}
 	c.Accounts[1].Expires = 1
 	xs, _ = g.candidates(c, "", false)
-	if len(xs) != 0 {
-		t.Fatal("expired token used")
+	if len(xs) != 1 || xs[0].ID != "one" {
+		t.Fatal("expired token used", xs)
 	}
 }
 
@@ -253,5 +254,84 @@ func TestActivityTraceCoversRetryAndTermination(t *testing.T) {
 	ask(g, `{"input":"next"}`)
 	if events[0].Request == first || events[len(events)-1].Kind != "finished" {
 		t.Fatal("request identity reused or not closed")
+	}
+}
+
+// A menu-bar account click while routing only sets Preferred; it must not strand
+// existing sealed conversations or block new ones when the chosen account is spent.
+func TestPreferredKeepsSealedOwnerAndFallsBack(t *testing.T) {
+	var seen []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("chatgpt-account-id"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	}))
+	defer up.Close()
+	c := pool()
+	c.Preferred = "two"
+	var events []event
+	g := newGateway(func() (config, error) { return c, nil }, up.URL, func(e event) { events = append(events, e) })
+	g.remember("test-session", "one")
+	if w := ask(g, `{"input":[{"encrypted_content":"sealed"}]}`); w.Code != 200 || strings.Join(seen, ",") != "acct-one" {
+		t.Fatalf("sealed conversation left its owner: %d %v", w.Code, seen)
+	}
+	seen = nil
+	r := httptest.NewRequest("POST", "http://127.0.0.1:18455/v1/responses", strings.NewReader(`{"input":"hi"}`))
+	r.Header.Set("Authorization", "Bearer "+pool().Key)
+	r.Header.Set("session-id", "new-session")
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 200 || strings.Join(seen, ",") != "acct-two" {
+		t.Fatalf("new request ignored preferred account: %d %v", w.Code, seen)
+	}
+	seen = nil
+	c.Accounts[1].Available = false
+	r = httptest.NewRequest("POST", "http://127.0.0.1:18455/v1/responses", strings.NewReader(`{"input":"hi"}`))
+	r.Header.Set("Authorization", "Bearer "+pool().Key)
+	r.Header.Set("session-id", "another-session")
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 200 || strings.Join(seen, ",") != "acct-one" {
+		t.Fatalf("spent preferred account blocked new requests: %d %v", w.Code, seen)
+	}
+}
+
+func TestUnknownSealedOwnerNeverAssignedToPreferred(t *testing.T) {
+	n := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { n++; w.WriteHeader(200) }))
+	defer up.Close()
+	c := pool()
+	c.Preferred = "two"
+	var events []event
+	g := newGateway(func() (config, error) { return c, nil }, up.URL, func(e event) { events = append(events, e) })
+	if w := ask(g, `{"input":[{"encrypted_content":"sealed"}]}`); w.Code != 409 || n != 0 {
+		t.Fatalf("sealed history with unknown owner was forwarded: %d %d", w.Code, n)
+	}
+	if len(events) == 0 || events[0].Kind != "rejected" || events[0].Status != 409 || events[0].Reason != "sealed_owner_unknown" {
+		t.Fatalf("rejection not recorded: %+v", events)
+	}
+}
+
+func TestRejectionsAreRecordedWithReason(t *testing.T) {
+	c := pool()
+	c.Accounts[0].Available, c.Accounts[1].Available = false, false
+	var events []event
+	g := newGateway(func() (config, error) { return c, nil }, "http://127.0.0.1:1", func(e event) { events = append(events, e) })
+	if w := ask(g, `{"input":"hi"}`); w.Code != 503 {
+		t.Fatal(w.Code)
+	}
+	g.remember("test-session", "one")
+	g.cool("one", time.Now().Add(time.Hour))
+	if w := ask(g, `{"input":[{"encrypted_content":"sealed"}]}`); w.Code != 409 {
+		t.Fatal(w.Code)
+	}
+	var got []string
+	for _, e := range events {
+		if e.Kind == "rejected" {
+			got = append(got, fmt.Sprintf("%d:%s:%s", e.Status, e.Reason, e.Account))
+		}
+	}
+	if strings.Join(got, ",") != "503:no_available_account:,409:sealed_owner_unavailable:one" {
+		t.Fatal(got)
 	}
 }

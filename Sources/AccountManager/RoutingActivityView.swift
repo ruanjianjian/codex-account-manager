@@ -17,7 +17,7 @@ struct RoutingActivityView: View {
         if !activity.active.isEmpty { return "\(activity.active.count) 个请求处理中" }
         switch activity.lastKind {
         case "completed": return "最近一次已完成"
-        case "refused", "network_error", "interrupted": return "最近请求遇到错误"
+        case "refused", "network_error", "interrupted", "rejected": return "最近请求遇到错误"
         case "ended": return "请求已结束"
         default: return "等待请求"
         }
@@ -106,7 +106,7 @@ struct RoutingActivityView: View {
                         if count > 0 { Text("\(count)").font(.system(size: 9, weight: .bold)).foregroundStyle(color) }
                         else if activity.lastAccount == slot.id && activity.lastKind == "completed" {
                             Image(systemName: "checkmark").font(.system(size: 8)).foregroundStyle(mint)
-                        } else if activity.lastAccount == slot.id && ["refused", "network_error", "interrupted"].contains(activity.lastKind) {
+                        } else if activity.lastAccount == slot.id && ["refused", "network_error", "interrupted", "rejected"].contains(activity.lastKind) {
                             Image(systemName: "exclamationmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.orange)
                         }
                     }.padding(.horizontal, 6).frame(width: max(40, w - destinationX - 8), height: 21)

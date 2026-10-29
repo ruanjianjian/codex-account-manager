@@ -75,6 +75,31 @@ import XCTest
         XCTAssertNil(h.outgoing); XCTAssertTrue(h.rollback.isEmpty)
         XCTAssertEqual(h.desktop, auth("c"))
     }
+    func slots(_ ids: [String: String]) -> [AccountSlot] {
+        ids.sorted { $0.key < $1.key }.map { var slot = AccountSlot(id: $0.key, name: $0.key, chromeProfile: "dedicated"); slot.expectedAccountID = $0.value; return slot }
+    }
+    func testLiveDesktopLoginOverridesStaleReceipt() {
+        let accounts = slots(["account-a": "a", "account-b": "b", "account-c": "c"])
+        let stale = DesktopSelection(slotID: "account-a", accountID: "a")
+        XCTAssertEqual(DesktopSelection.live(desktopAccountID: "c", receipt: stale, accounts: accounts), .init(slotID: "account-c", accountID: "c"))
+        XCTAssertEqual(DesktopSelection.live(desktopAccountID: "a", receipt: stale, accounts: accounts), stale)
+        XCTAssertNil(DesktopSelection.live(desktopAccountID: "unlisted", receipt: stale, accounts: accounts))
+        XCTAssertNil(DesktopSelection.live(desktopAccountID: nil, receipt: stale, accounts: accounts))
+        let twins = slots(["account-a": "a", "account-z": "a"])
+        XCTAssertEqual(DesktopSelection.live(desktopAccountID: "a", receipt: .init(slotID: "account-z", accountID: "a"), accounts: twins)?.slotID, "account-z")
+    }
+    func testSwitchAfterLoginInsideCodexUsesLiveDesktopAsPrevious() async throws {
+        // The faulty machine: receipt says A, Codex itself is logged in to C. Switching to B must
+        // save C's latest login into C, not refuse after Codex was already closed.
+        let h = Harness(auth("c", revision: 7))
+        let previous = DesktopSelection.live(desktopAccountID: "c", receipt: h.selected, accounts: slots(["account-a": "a", "account-b": "b", "account-c": "c"]))
+        try await DesktopSwitchTransaction.run(target: DesktopCredential(auth("b")),
+            selection: .init(slotID: "account-b", accountID: "b"), previous: previous, ports: h.ports)
+        XCTAssertEqual(h.outgoing, auth("c", revision: 7))
+        XCTAssertEqual(h.desktop, auth("b")); XCTAssertEqual(h.selected?.slotID, "account-b"); XCTAssertEqual(h.launched, 1)
+        let backup = try JSONDecoder().decode(DesktopRollback.self, from: h.rollback)
+        XCTAssertEqual(backup.selection?.slotID, "account-c")
+    }
     func testCrashAfterLaunchRequiresStoppedProcessBeforeRecovery() async throws {
         let h = Harness(auth("a")); h.failClearPending = true
         do { try await switchToB(h); XCTFail("must fail") } catch {}

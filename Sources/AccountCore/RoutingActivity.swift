@@ -5,8 +5,10 @@ public struct GatewayActivityEvent: Codable, Sendable {
     public var account: String?
     public var request: String?
     public var status: Int?
-    public init(kind: String, account: String? = nil, request: String? = nil, status: Int? = nil) {
-        self.kind = kind; self.account = account; self.request = request; self.status = status
+    /// Fixed category from the gateway (never request content), e.g. "sealed_owner_unavailable".
+    public var reason: String?
+    public init(kind: String, account: String? = nil, request: String? = nil, status: Int? = nil, reason: String? = nil) {
+        self.kind = kind; self.account = account; self.request = request; self.status = status; self.reason = reason
     }
 }
 
@@ -35,7 +37,7 @@ public struct RoutingActivity: Sendable {
         case "completed":
             guard active.removeValue(forKey: request) != nil else { return }
             completed += 1; lastAccount = event.account; lastKind = "completed"; changedAt = date
-        case "refused", "network_error", "interrupted":
+        case "refused", "network_error", "interrupted", "rejected":
             active.removeValue(forKey: request)
             lastAccount = event.account; lastKind = event.kind; changedAt = date
         case "finished":

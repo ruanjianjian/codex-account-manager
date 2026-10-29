@@ -51,6 +51,8 @@ type event struct {
 	Kind    string `json:"kind"`
 	Account string `json:"account,omitempty"`
 	Status  int    `json:"status,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	Route   string `json:"route,omitempty"`
 	Input   int64  `json:"input,omitempty"`
 	Output  int64  `json:"output,omitempty"`
 }
@@ -115,10 +117,30 @@ func fail(w http.ResponseWriter, status int, msg string) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": msg, "type": "gateway_error"}})
 }
+
+// Route names only, for diagnostics: never query strings or unexpected characters.
+func routeName(r *http.Request) string {
+	route := r.Method + " " + r.URL.Path
+	if len(route) > 96 || strings.IndexFunc(r.URL.Path, func(c rune) bool {
+		return !(c == '/' || c == '_' || c == '-' || c == '.' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z')
+	}) >= 0 {
+		return r.Method + " other"
+	}
+	return route
+}
 func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Every gateway-side refusal is recorded with a fixed reason; upstream refusals emit "refused".
+	reject := func(status int, reason, account, msg string) {
+		e := event{Kind: "rejected", Status: status, Reason: reason, Account: account}
+		if reason == "unsupported_route" {
+			e.Route = routeName(r)
+		}
+		g.emitRequest(r, e)
+		fail(w, status, msg)
+	}
 	c, err := g.config()
 	if err != nil {
-		fail(w, 503, "Account pool unavailable; refresh accounts in the menu-bar app.")
+		reject(503, "pool_unavailable", "", "Account pool unavailable; refresh accounts in the menu-bar app.")
 		return
 	}
 	host := r.Host
@@ -127,7 +149,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := net.ParseIP(host)
 	if (host != "localhost" && (ip == nil || !ip.IsLoopback())) || r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" {
-		fail(w, 403, "Local non-browser clients only.")
+		reject(403, "non_local_client", "", "Local non-browser clients only.")
 		return
 	}
 	authorization := r.Header.Get("Authorization")
@@ -167,6 +189,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/backend-api/codex"), "/v1")
 	if path == "/responses" && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		// Expected on every turn: the client falls back to HTTP. Not a refusal worth recording.
 		fail(w, http.StatusUpgradeRequired, "Use HTTP Responses streaming.")
 		return
 	}
@@ -175,7 +198,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != "POST" || (path != "/responses" && path != "/responses/compact") {
-		fail(w, 404, "Unsupported gateway route.")
+		reject(404, "unsupported_route", "", "Unsupported gateway route.")
 		return
 	}
 	compressed := http.MaxBytesReader(w, r.Body, 32<<20)
@@ -185,7 +208,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "zstd":
 		decoder, e := zstd.NewReader(compressed, zstd.WithDecoderMaxMemory(64<<20), zstd.WithDecoderConcurrency(1))
 		if e != nil {
-			fail(w, 400, "Invalid compressed request.")
+			reject(400, "invalid_body", "", "Invalid compressed request.")
 			return
 		}
 		defer decoder.Close()
@@ -193,27 +216,27 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "gzip":
 		decoder, e := gzip.NewReader(compressed)
 		if e != nil {
-			fail(w, 400, "Invalid compressed request.")
+			reject(400, "invalid_body", "", "Invalid compressed request.")
 			return
 		}
 		defer decoder.Close()
 		reader = decoder
 	default:
-		fail(w, 415, "Unsupported request encoding.")
+		reject(415, "invalid_body", "", "Unsupported request encoding.")
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(reader, (32<<20)+1))
 	if len(body) > 32<<20 {
-		fail(w, 413, "Decoded request too large.")
+		reject(413, "invalid_body", "", "Decoded request too large.")
 		return
 	}
 	if err != nil {
-		fail(w, 413, "Request too large.")
+		reject(413, "invalid_body", "", "Request too large.")
 		return
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(body, &obj) != nil || obj == nil {
-		fail(w, 400, "Expected JSON object.")
+		reject(400, "invalid_body", "", "Expected JSON object.")
 		return
 	}
 	// Codex subscriptions require ephemeral Responses and streaming.
@@ -249,12 +272,16 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.mu.Unlock()
 	}
 	candidates, stuck := g.candidates(c, session, bound)
-	if stuck {
-		fail(w, 409, "This conversation contains account-bound state. Keep its account or start a new conversation to use another account.")
+	switch {
+	case stuck == "sealed_owner_unknown":
+		reject(409, stuck, "", "This conversation contains account-bound history from an unknown account; it was not sent to another account. Start a new conversation.")
 		return
-	}
-	if len(candidates) == 0 {
-		fail(w, 503, "No available account. Refresh or reconnect accounts in Codex Accounts.")
+	case stuck != "":
+		owner := g.owner(session)
+		reject(409, stuck, owner, "This conversation's account-bound history must stay on account "+owner+", which is unavailable now (quota, cooldown or expired login). Wait for it to recover or start a new conversation.")
+		return
+	case len(candidates) == 0:
+		reject(503, "no_available_account", "", "No available account. Refresh or reconnect accounts in Codex Accounts.")
 		return
 	}
 	for _, a := range candidates {
@@ -263,7 +290,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		req, err := g.request(r, path, body, a)
 		if err != nil {
-			fail(w, 502, "Cannot create upstream request.")
+			reject(502, "upstream_request_error", a.ID, "Cannot create upstream request.")
 			return
 		}
 		g.emitRequest(r, event{Kind: "routing", Account: a.ID, Session: session})
@@ -312,7 +339,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	fail(w, 503, "All available accounts declined this request. Refresh accounts or wait for quota reset.")
+	reject(503, "all_accounts_declined", "", "All available accounts declined this request. Refresh accounts or wait for quota reset.")
 }
 func retryable(code int) bool { return code == 401 || code == 403 || code == 429 || code >= 500 }
 func retryAt(h http.Header, b []byte) time.Time {
@@ -341,7 +368,9 @@ func retryAt(h http.Header, b []byte) time.Time {
 	}
 	return time.Now().Add(time.Duration(seconds * float64(time.Second)))
 }
-func (g *gateway) candidates(c config, session string, bound bool) ([]account, bool) {
+
+// Returns the accounts to try in order, or why a sealed conversation cannot be served.
+func (g *gateway) candidates(c config, session string, bound bool) ([]account, string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
@@ -349,33 +378,51 @@ func (g *gateway) candidates(c config, session string, bound bool) ([]account, b
 	if old.Until.Before(now) {
 		old = binding{}
 	}
+	// Without a recorded owner, sealed histories cannot safely be assigned, not even to Preferred.
+	if bound && old.ID == "" {
+		return nil, "sealed_owner_unknown"
+	}
 	var out []account
 	for _, a := range c.Accounts {
-		if c.Preferred != "" && a.ID != c.Preferred {
+		if a.Access == "" || a.Expires <= float64(now.Unix()+30) || g.rest[a.ID].After(now) {
 			continue
 		}
-		if a.Access == "" || a.Expires <= float64(now.Unix()+30) || (!a.Available && !(bound && old.ID == a.ID)) || g.rest[a.ID].After(now) {
+		// Sealed state stays with its owner, even when another account is preferred or quota looks spent.
+		if bound {
+			if a.ID == old.ID {
+				out = append(out, a)
+			}
 			continue
 		}
-		if bound && old.ID != "" && old.ID != a.ID {
-			continue
+		if a.Available {
+			out = append(out, a)
 		}
-		out = append(out, a)
+	}
+	// Preferred only orders new requests; the others remain fallbacks.
+	rank := func(a account) int {
+		switch a.ID {
+		case c.Preferred:
+			return 0
+		case old.ID:
+			return 1
+		}
+		return 2
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].ID == old.ID {
-			return true
-		}
-		if out[j].ID == old.ID {
-			return false
+		if ri, rj := rank(out[i]), rank(out[j]); ri != rj {
+			return ri < rj
 		}
 		return out[i].Reset > 0 && (out[j].Reset == 0 || out[i].Reset < out[j].Reset)
 	})
-	// Without a recorded owner, legacy sealed histories cannot safely be assigned.
-	if bound && old.ID == "" && c.Preferred == "" {
-		return nil, true
+	if bound && len(out) == 0 {
+		return nil, "sealed_owner_unavailable"
 	}
-	return out, bound && len(out) == 0
+	return out, ""
+}
+func (g *gateway) owner(session string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.sticky[session].ID
 }
 func (g *gateway) remember(session, id string) {
 	if session == "" {

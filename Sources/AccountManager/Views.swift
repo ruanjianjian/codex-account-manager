@@ -106,7 +106,7 @@ struct GeneralSettings: View {
                 Toggle("自动账号路由", isOn: Binding(get: { store.gatewayEnabled }, set: { store.setGatewayEnabled($0) }))
                 Text(store.gatewayCaption).font(.caption).foregroundStyle(.secondary)
                 if store.gatewayEnabled {
-                    Picker("使用账号", selection: Binding(get: { store.gatewayPreferred }, set: store.selectGatewayAccount)) {
+                    Picker("新会话优先", selection: Binding(get: { store.gatewayPreferred }, set: store.selectGatewayAccount)) {
                         Text("自动选择").tag("")
                         ForEach(store.saved.accounts) { Text($0.displayName).tag($0.id) }
                     }
