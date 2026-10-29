@@ -54,6 +54,7 @@ type event struct {
 	Reason  string `json:"reason,omitempty"`
 	Route   string `json:"route,omitempty"`
 	Input   int64  `json:"input,omitempty"`
+	Cached  int64  `json:"cached,omitempty"`
 	Output  int64  `json:"output,omitempty"`
 }
 type binding struct {
@@ -325,8 +326,9 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, res.StatusCode, "Upstream rejected the request; account "+a.ID+". No retry was made.")
 			return
 		}
-		if !strings.Contains(res.Header.Get("Content-Type"), "text/event-stream") {
-			b, e := io.ReadAll(io.LimitReader(res.Body, 32<<20))
+		reply := bufio.NewReaderSize(res.Body, 64<<10)
+		if !eventStream(res.Header.Get("Content-Type"), reply) {
+			b, e := io.ReadAll(io.LimitReader(reply, 32<<20))
 			res.Body.Close()
 			if e != nil {
 				fail(w, 502, "Upstream reply interrupted.")
@@ -340,7 +342,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			g.emitRequest(r, event{Kind: "completed", Account: a.ID, Session: session})
 			return
 		}
-		committed, retry := g.stream(w, r, res, a, session)
+		committed, retry := g.stream(w, r, reply, a, session)
 		res.Body.Close()
 		if committed {
 			return
@@ -351,6 +353,18 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	reject(503, "all_accounts_declined", "", "All available accounts declined this request. Refresh accounts or wait for quota reset.")
+}
+
+// The Codex backend streams SSE without a Content-Type header, so the first bytes decide too.
+func eventStream(contentType string, body *bufio.Reader) bool {
+	if strings.Contains(contentType, "text/event-stream") {
+		return true
+	}
+	if contentType != "" {
+		return false
+	}
+	head, _ := body.Peek(6)
+	return bytes.HasPrefix(head, []byte("event:")) || bytes.HasPrefix(head, []byte("data:")) || bytes.HasPrefix(head, []byte(":"))
 }
 func retryable(code int) bool { return code == 401 || code == 403 || code == 429 || code >= 500 }
 func retryAt(h http.Header, b []byte) time.Time {
@@ -412,12 +426,13 @@ func (g *gateway) candidates(c config, session string, bound bool, guess string)
 			out = append(out, a)
 		}
 	}
-	// Preferred only orders new requests; the others remain fallbacks.
+	// A conversation stays on its own account so its prompt cache survives; Preferred orders
+	// new conversations and takes over only when that account is unavailable.
 	rank := func(a account) int {
 		switch a.ID {
-		case c.Preferred:
-			return 0
 		case old.ID:
+			return 0
+		case c.Preferred:
 			return 1
 		}
 		return 2
@@ -518,8 +533,7 @@ func (g *gateway) models(w http.ResponseWriter, r *http.Request, c config) {
 }
 
 // Buffer only the prelude, never replay a stream after text or a tool call escaped.
-func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Response, a account, session string) (bool, bool) {
-	reader := bufio.NewReaderSize(res.Body, 64<<10)
+func (g *gateway) stream(w http.ResponseWriter, r *http.Request, reader *bufio.Reader, a account, session string) (bool, bool) {
 	var pre bytes.Buffer
 	committed := false
 	completed := false
@@ -532,7 +546,10 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Respo
 				Type     string `json:"type"`
 				Response struct {
 					Usage struct {
-						Input  int64 `json:"input_tokens"`
+						Input        int64 `json:"input_tokens"`
+						InputDetails struct {
+							Cached int64 `json:"cached_tokens"`
+						} `json:"input_tokens_details"`
 						Output int64 `json:"output_tokens"`
 					} `json:"usage"`
 				} `json:"response"`
@@ -544,7 +561,7 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, res *http.Respo
 					content = strings.Contains(v.Type, "delta") || strings.Contains(v.Type, "output_item") || v.Type == "response.completed"
 					if v.Type == "response.completed" {
 						completed = true
-						g.emitRequest(r, event{Kind: "completed", Account: a.ID, Input: v.Response.Usage.Input, Output: v.Response.Usage.Output})
+						g.emitRequest(r, event{Kind: "completed", Account: a.ID, Input: v.Response.Usage.Input, Cached: v.Response.Usage.InputDetails.Cached, Output: v.Response.Usage.Output})
 					}
 				}
 			}

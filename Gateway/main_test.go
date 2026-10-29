@@ -384,3 +384,62 @@ func TestFailedOwnerGuessIsNotPinned(t *testing.T) {
 		t.Fatalf("recorded owner not kept after success: %d", code)
 	}
 }
+
+// Changing Preferred must not move a running conversation: its prompt cache lives on its account.
+func TestOngoingConversationStaysBeforePreferred(t *testing.T) {
+	c := pool()
+	c.Preferred = "two"
+	g := newGateway(func() (config, error) { return c, nil }, "", func(event) {})
+	g.remember("running", "one")
+	if xs, _ := g.candidates(c, "running", false, ""); len(xs) != 2 || xs[0].ID != "one" || xs[1].ID != "two" {
+		t.Fatal("running conversation moved to preferred", xs)
+	}
+	if xs, _ := g.candidates(c, "fresh", false, ""); xs[0].ID != "two" {
+		t.Fatal("new conversation ignored preferred", xs)
+	}
+	c.Accounts[0].Available = false
+	if xs, _ := g.candidates(c, "running", false, ""); len(xs) != 1 || xs[0].ID != "two" {
+		t.Fatal("unavailable owner not replaced by preferred", xs)
+	}
+}
+
+func TestCompletedEventCarriesCachedTokens(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":64},\"output_tokens\":1}}}\n\n")
+	}))
+	defer up.Close()
+	var events []event
+	g := newGateway(func() (config, error) { return pool(), nil }, up.URL, func(e event) { events = append(events, e) })
+	ask(g, `{"input":"hi"}`)
+	for _, e := range events {
+		if e.Kind == "completed" {
+			if e.Input != 100 || e.Cached != 64 {
+				t.Fatal(e)
+			}
+			return
+		}
+	}
+	t.Fatal("no completed event", events)
+}
+
+// The real backend sends SSE with no Content-Type; it must still stream and report usage.
+func TestUntypedEventStreamStillStreams(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header()["Content-Type"] = nil
+		io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":23313,\"input_tokens_details\":{\"cached_tokens\":23168},\"output_tokens\":6}}}\n\n")
+	}))
+	defer up.Close()
+	var events []event
+	g := newGateway(func() (config, error) { return pool(), nil }, up.URL, func(e event) { events = append(events, e) })
+	w := ask(g, `{"input":"hi"}`)
+	if w.Code != 200 || w.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(w.Body.String(), "response.completed") {
+		t.Fatal(w.Code, w.Header(), w.Body.String())
+	}
+	for _, e := range events {
+		if e.Kind == "completed" && e.Input == 23313 && e.Cached == 23168 {
+			return
+		}
+	}
+	t.Fatal("usage not recorded", events)
+}
