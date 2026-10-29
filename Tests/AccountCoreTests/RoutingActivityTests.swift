@@ -42,4 +42,23 @@ final class RoutingActivityTests: XCTestCase {
         activity.receive(event)
         XCTAssertTrue(activity.active.isEmpty); XCTAssertEqual(activity.lastKind, "rejected")
     }
+    func testOutcomeAndPromptCacheFollowTheLatestReply() throws {
+        let line = #"{"request":"r1","kind":"completed","account":"b","input":65219,"cached":59008,"output":12}"#
+        let completed = try JSONDecoder().decode(GatewayActivityEvent.self, from: Data(line.utf8))
+        var activity = RoutingActivity()
+        XCTAssertNil(activity.lastRouted); XCTAssertNil(activity.lastCache)
+        activity.receive(.init(kind: "routing", account: "a", request: "r1"))
+        activity.receive(.init(kind: "refused", account: "a", request: "r1", status: 429))
+        XCTAssertEqual(activity.lastRouted, false)
+        activity.receive(.init(kind: "routing", account: "b", request: "r1"))
+        activity.receive(completed)
+        XCTAssertEqual(activity.lastRouted, true)
+        XCTAssertEqual(activity.lastCache, PromptCacheUse(cached: 59008, input: 65219))
+        XCTAssertEqual(activity.lastCache?.percent, 90)
+        activity.receive(.init(kind: "routing", account: "b", request: "r2"))
+        activity.receive(.init(kind: "completed", account: "b", request: "r2", input: 900, cached: 0))
+        XCTAssertEqual(activity.lastCache?.hit, false)
+        activity.receive(.init(kind: "stopped"))
+        XCTAssertNil(activity.lastRouted); XCTAssertNil(activity.lastCache)
+    }
 }

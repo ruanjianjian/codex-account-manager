@@ -79,6 +79,7 @@ enum SlotStatus: Equatable {
     private var resetNextAttempt: [String: Date] = [:]
     private var resetRefreshBusy = false
     private var resetStorageAvailable = true
+    private var lastAutoConnect = Date.distantPast
     private var nextUsagePoll: [String: Date] = [:]
 
     var onShortcutChange: (() -> Void)?
@@ -833,6 +834,7 @@ enum SlotStatus: Equatable {
                 self.resetMonitor.enabled = true; self.resetMonitor.lastError = nil
                 self.resetMonitor.lastCheckedAt = now; self.resetMonitor.sourceUpdatedAt = now; self.resetMonitor.sourceStale = false
                 self.saveResetMonitor(); self.nextResetCheck = now.addingTimeInterval(60)
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
                 self.record("个人 X 监控已连接；每分钟检查 Tibo，新公告触发所有账号余量查询。")
             } catch is CancellationError { }
             catch { self.personalX.lastError = (error as? PersonalXError ?? .unavailable).localizedDescription; self.savePersonalX() }
@@ -850,6 +852,7 @@ enum SlotStatus: Equatable {
         if let signal = signals.last {
             resetNextAttempt.removeAll()
             record("个人 X 发现 Tibo \(signal.label)，刷新所有账号。原帖：\(signal.originalURL!.absoluteString)")
+            notifyReset(signal)
             retryResetRefresh()
         }
     }
@@ -874,26 +877,49 @@ enum SlotStatus: Equatable {
             resetMonitor.lastError = "公告监控记录无法保存，已停止监控；账号同步继续。"
         }
     }
+    /// Tells the user right away, with what is left to use before a planned reset wipes it.
+    private func notifyReset(_ signal: ResetAnnouncement) {
+        let accounts = saved.accounts.compactMap { slot -> ResetNotice.Account? in
+            // A global reset refills the longest window too; that is the quota that would go unused.
+            guard let window = slot.snapshot?.rates.windows.filter({ $0.remaining != nil })
+                .max(by: { ($0.windowDurationMins ?? 0) < ($1.windowDurationMins ?? 0) }) else { return nil }
+            return .init(name: slot.displayName, remaining: window.remaining!)
+        }
+        guard let notice = ResetNotice.message(for: signal, accounts: accounts, now: Date()) else { return }
+        let content = UNMutableNotificationContent(); content.title = notice.title; content.body = notice.body; content.sound = .default
+        if let link = signal.originalURL { content.userInfo = ["url": link.absoluteString] }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "reset-" + signal.key, content: content, trigger: nil))
+    }
+    /// A planned reset the user can still act on; shown on the widget and dashboard until it passes.
+    var resetAlert: (text: String, url: URL)? {
+        guard resetMonitor.enabled, let post = resetMonitor.lastAnnouncement, post.isUpcoming(at: now),
+              let timing = post.timing, let url = post.originalURL else { return nil }
+        return ("Tibo 预告" + timing.describe(now: now) + " · 抓紧用", url)
+    }
     func setResetMonitoring(_ enabled: Bool) {
         guard !preview, resetStorageAvailable else { return }
         resetMonitor.enabled = enabled; saveResetMonitor()
-        if enabled { checkResetAnnouncements(force: true) }
+        if enabled {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            checkResetAnnouncements(force: true)
+        }
         else { resetCheckGeneration = UUID(); resetCheckTask?.cancel(); resetCheckTask = nil; checkingResetAnnouncements = false }
     }
-    var resetMonitorCaption: String {
+    var resetSourceCaption: String {
         if !resetMonitor.enabled { return "已关闭" }
-        if let error = resetMonitor.lastError { return error }
-        if personalX.enabled { return personalXCaption }
-        if checkingResetAnnouncements { return "正在检查公告…" }
-        guard let checked = resetMonitor.lastCheckedAt else { return "等待首次检查" }
-        let status = resetMonitor.sourceStale ? "公告源有延迟" : "监控中"
-        return status + " · 上次检查 " + checked.formatted(date: .omitted, time: .shortened)
+        if personalXTesting { return "正在连接 X…" }
+        if let error = resetMonitor.lastError ?? (personalX.enabled ? personalX.lastError : nil) { return error }
+        if checkingResetAnnouncements { return "正在检查…" }
+        let source = personalX.enabled ? "已连接 X · 每分钟检查" : "未登录 X · 公共源" + (resetMonitor.sourceStale ? "有延迟" : "")
+        guard let checked = resetMonitor.lastCheckedAt else { return source }
+        return source + " · " + checked.formatted(date: .omitted, time: .shortened)
     }
-    var resetRefreshCaption: String? {
-        guard let post = resetMonitor.lastAnnouncement else { return nil }
-        let result = "已刷新 \(resetMonitor.refreshedAccountIDs.count)/\(resetMonitor.targetCount) 个账号"
-        let tail = resetMonitor.pendingAccountIDs.isEmpty ? "" : (resetMonitor.canRetry(at: now) ? " · 其余重试中" : " · 其余待正常同步或重新登录")
-        return post.label + " · " + result + tail
+    /// While the X window is open: once signed in, open Tibo's page and start monitoring without extra clicks.
+    func autoConnectPersonalX() async {
+        guard !preview, !personalX.enabled, !personalXTesting, Date().timeIntervalSince(lastAutoConnect) >= 8,
+              let page = await personalXBrowser.pageState(), page.loggedIn else { return }
+        lastAutoConnect = Date()
+        if page.onTibo { testAndEnablePersonalX() } else { personalXBrowser.openTibo() }
     }
     func checkResetAnnouncements(force: Bool = false) {
         guard !preview, persistenceEnabled, resetStorageAvailable, resetMonitor.enabled,
@@ -925,6 +951,7 @@ enum SlotStatus: Equatable {
                 if let signal = signals.last, self.resetStorageAvailable {
                     self.resetNextAttempt.removeAll()
                     self.record("检测到 Tibo \(signal.label)，开始刷新全部账号。原帖：\(signal.originalURL!.absoluteString)")
+                    self.notifyReset(signal)
                     self.retryResetRefresh()
                 }
             } catch is CancellationError { return }

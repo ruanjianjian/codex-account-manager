@@ -13,15 +13,21 @@ struct EmbeddedWidgetView: View {
         guard store.gatewayEnabled else { return "\(store.connectedCount)/\(accounts.count) 已连接" }
         let preferred = store.gatewayPreferred.isEmpty ? "自动选路" : "优先 " + (store.slot(store.gatewayPreferred)?.displayName ?? "指定账号")
         let activity = store.routingActivity
-        let state = !store.gatewayReady ? "等待网关" : (activity.active.isEmpty ? "空闲" : "\(activity.active.count) 个请求中")
-        return "路由 · \(preferred) · \(state)"
+        return !store.gatewayReady ? "等待网关" : (activity.active.isEmpty ? preferred : "\(activity.active.count) 个请求中")
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Text("CODEX / ACCOUNTS").font(.system(size: 12, weight: .heavy)).tracking(0.6)
+                Text("CODEX / ACCOUNTS").font(.system(size: 12, weight: .heavy)).tracking(0.6).allowsHitTesting(false)
                 Spacer(minLength: 8)
-                Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                if let alert = store.resetAlert {
+                    Link(destination: alert.url) {
+                        Label(alert.text, systemImage: "bolt.fill").font(.system(size: 10, weight: .semibold)).lineLimit(1)
+                    }.foregroundStyle(Color(red: 0.85, green: 0.38, blue: 0.05)).help("打开 Tibo 原帖")
+                } else {
+                    Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).allowsHitTesting(false)
+                }
+                if store.gatewayEnabled { RoutingHealthDots(store: store).foregroundStyle(.secondary) }
                 Button { store.refreshAll() } label: { Image(systemName: "arrow.clockwise") }
                     .disabled(store.isBusy || store.preview).help("刷新所有账号").accessibilityLabel("刷新组件额度")
                 Button { present(.settings) } label: { Image(systemName: "slider.horizontal.3") }
@@ -30,6 +36,7 @@ struct EmbeddedWidgetView: View {
             if accounts.isEmpty {
                 Button("＋ 添加第一个账号") { present(.add) }.buttonStyle(.plain).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                if store.gatewayEnabled { RoutingLane(store: store, columns: columns, spacing: 8).padding(.bottom, -10) }
                 if accounts.count <= 4 {
                     HStack(spacing: 8) {
                         ForEach(Array(accounts.enumerated()), id: \.element.id) { index, slot in card(slot, index: index) }
@@ -53,7 +60,8 @@ struct EmbeddedWidgetView: View {
         }
         .padding(14).frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(Color(white: 0.12))
-        .background(Color(white: 0.97), in: RoundedRectangle(cornerRadius: 20))
+        // Anything that is not a control moves the widget: header, lane, card faces and margins.
+        .background { ZStack { RoundedRectangle(cornerRadius: 20).fill(Color(white: 0.97)); DragSurface() } }
         .preferredColorScheme(.light)
     }
 
@@ -70,12 +78,12 @@ struct EmbeddedWidgetView: View {
             }.buttonStyle(.plain)
                 .disabled(store.preview || store.loginSlotID != nil || !store.launchingDesktop.isEmpty || slot.expectedAccountID == nil)
                 .help(store.desktopActionLabel(slot.id))
-            Spacer(minLength: 4)
+            Spacer(minLength: 4).allowsHitTesting(false)
             if let remaining {
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
                     Text("\(Int(remaining))").font(.system(size: 34, weight: .black)).tracking(-1.2)
                     Text("%").font(.system(size: 14, weight: .bold))
-                }.foregroundStyle(colors.ink).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                }.foregroundStyle(colors.ink).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7).allowsHitTesting(false)
                     .accessibilityLabel("\(slot.displayName) 最低窗口余量 \(Int(remaining))%")
             } else {
                 Button { store.connectOrContinue(slot.id) } label: {
@@ -84,15 +92,15 @@ struct EmbeddedWidgetView: View {
             }
             Spacer(minLength: 4)
             Text(reset.map { Presentation.countdown($0, now: store.now).replacingOccurrences(of: "后", with: "后重置") } ?? (store.status[slot.id]?.message ?? "等待同步"))
-                .font(.system(size: 10)).lineLimit(1).minimumScaleFactor(0.8)
+                .font(.system(size: 10)).lineLimit(1).minimumScaleFactor(0.8).allowsHitTesting(false)
             HStack {
                 Text("BANKED RESET").font(.system(size: 8, weight: .bold)).tracking(0.5)
                 Spacer(minLength: 2)
                 Text(banked.map(String.init) ?? "—").font(.system(size: 11, weight: .bold)).monospacedDigit()
-            }.padding(.top, 5)
+            }.padding(.top, 5).allowsHitTesting(false)
         }
         .padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .foregroundStyle(.white).background(colors.paper)
+        .foregroundStyle(.white).background { colors.paper.allowsHitTesting(false) }
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 12, topTrailingRadius: 12))
         .overlay(alignment: .topTrailing) {
             if routing { Circle().fill(colors.ink).frame(width: 6, height: 6).padding(8).help("请求处理中") }

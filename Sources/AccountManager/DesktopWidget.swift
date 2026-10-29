@@ -35,10 +35,22 @@ private struct ResizeSurface: NSViewRepresentable {
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
-private struct DragSurface: NSViewRepresentable {
+struct DragSurface: NSViewRepresentable {
+    /// Moves the window itself rather than through performDrag, which a desktop-level panel ignores.
     final class Handle: NSView {
+        private var start: (mouse: NSPoint, origin: NSPoint)?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-        override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+        // Global event position (y grows downward), independent of where the window has moved to.
+        private func global(_ event: NSEvent) -> NSPoint? { event.cgEvent?.location }
+        override func mouseDown(with event: NSEvent) {
+            guard let window, let mouse = global(event) else { return }
+            start = (mouse, window.frame.origin)
+        }
+        override func mouseDragged(with event: NSEvent) {
+            guard let window, let start, let mouse = global(event) else { return }
+            window.setFrameOrigin(NSPoint(x: start.origin.x + mouse.x - start.mouse.x, y: start.origin.y - (mouse.y - start.mouse.y)))
+        }
+        override func mouseUp(with event: NSEvent) { start = nil }
     }
     func makeNSView(context: Context) -> NSView {
         let view = Handle(); view.toolTip = "拖动组件"; return view
@@ -83,6 +95,11 @@ struct DesktopWidgetView: View {
                     .help("设置").accessibilityLabel("打开设置")
             }.buttonStyle(.plain).font(.system(size: 13))
             if store.gatewayEnabled { RoutingActivityView(store: store) }
+            if let alert = store.resetAlert {
+                Link(destination: alert.url) {
+                    Label(alert.text, systemImage: "bolt.fill").font(.system(size: 11, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                }.foregroundStyle(Color(red: 0.85, green: 0.38, blue: 0.05)).help("打开 Tibo 原帖")
+            }
             if let banner = store.banner {
                 HStack(alignment: .top) {
                     Text(banner).font(.caption).fixedSize(horizontal: false, vertical: true)

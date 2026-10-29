@@ -134,40 +134,26 @@ struct GeneralSettings: View {
                         Divider()
                         row("登录 Mac 时启动") { switchToggle(Binding(get: { store.loginAtLaunch }, set: store.setLoginAtLaunch)) }
                     }
-                    caption("重置公告")
+                    caption("重置提醒")
                     card {
-                        row("监控 Tibo 重置公告") { switchToggle(Binding(get: { store.resetMonitor.enabled }, set: store.setResetMonitoring)) }
+                        row("Tibo 重置提醒") { switchToggle(Binding(get: { store.resetMonitor.enabled }, set: store.setResetMonitoring)) }
                         Divider()
-                        HStack {
-                            note(store.resetMonitorCaption)
-                            Spacer()
-                            Button("立即检查") { store.checkResetAnnouncements(force: true) }.controlSize(.small)
+                        HStack(spacing: 6) {
+                            Circle().fill(store.personalX.enabled && store.resetMonitor.enabled ? Color(red: 0.16, green: 0.66, blue: 0.3) : Color.secondary.opacity(0.35))
+                                .frame(width: 6, height: 6)
+                            note(store.resetSourceCaption).lineLimit(2)
+                            Spacer(minLength: 6)
+                            Button(store.personalX.enabled ? "查看 X" : "登录 X", action: openPersonalX).controlSize(.small).disabled(store.preview)
+                            Button { store.checkResetAnnouncements(force: true) } label: { Image(systemName: "arrow.clockwise") }
+                                .buttonStyle(.plain).help("立即检查").accessibilityLabel("立即检查重置公告")
                                 .disabled(store.preview || !store.resetMonitor.enabled || store.checkingResetAnnouncements)
                         }.padding(.vertical, 8)
-                        if let result = store.resetRefreshCaption {
-                            note(result).padding(.bottom, 6)
-                            if let link = store.resetMonitor.lastAnnouncement?.originalURL { Link("查看公告原帖", destination: link).font(.system(size: 10)).padding(.bottom, 6) }
-                        }
-                        if !store.personalX.enabled {
-                            HStack {
-                                Link("公告源：Codex Reset News", destination: URL(string: "https://www.codexreset-news.com/developers?lang=en")!)
-                                Link("上游：codex-reset.com", destination: URL(string: "https://codex-reset.com/")!)
-                            }.font(.system(size: 10)).padding(.bottom, 8)
-                        }
-                        if let updated = store.resetMonitor.sourceUpdatedAt {
-                            note("源更新：" + updated.formatted(date: .abbreviated, time: .shortened)).padding(.bottom, 8)
-                        }
-                    }
-                    caption("个人 X 监控")
-                    card {
-                        note(store.personalXCaption).padding(.top, 9)
-                        HStack {
-                            Button("登录 / 查看个人 X", action: openPersonalX).disabled(store.preview)
-                            if store.personalX.enabled { Button("停用") { store.disablePersonalX() }.disabled(store.personalXTesting) }
-                        }.controlSize(.small).padding(.vertical, 8)
-                        if let post = store.personalX.lastPosts.first, let link = post.originalURL {
-                            Link("最近读到：" + (post.date?.formatted(date: .abbreviated, time: .shortened) ?? post.id), destination: link).font(.system(size: 10))
-                            Text(verbatim: String(post.text.prefix(200))).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).padding(.bottom, 8)
+                        if let post = store.resetMonitor.lastAnnouncement, let link = post.originalURL {
+                            HStack(spacing: 6) {
+                                note(latestAnnouncement(post)).lineLimit(1)
+                                Spacer(minLength: 6)
+                                Link("原帖", destination: link).font(.system(size: 10))
+                            }.padding(.bottom, 8)
                         }
                     }
                     caption("登录存储")
@@ -202,6 +188,11 @@ struct GeneralSettings: View {
         .foregroundStyle(Color(white: 0.12))
         .background(Color(white: 0.97))
         .preferredColorScheme(.light)
+    }
+    private func latestAnnouncement(_ post: ResetAnnouncement) -> String {
+        let when = post.isUpcoming(at: store.now) ? post.timing?.describe(now: store.now) : post.date?.formatted(date: .abbreviated, time: .shortened)
+        let refreshed = post.kind == "possible_reset" ? "" : " · 已刷新 \(store.resetMonitor.refreshedAccountIDs.count)/\(store.resetMonitor.targetCount)"
+        return "最近：" + post.label + (when.map { " · " + $0 } ?? "") + refreshed
     }
     private var routing: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -289,7 +280,7 @@ enum WidgetAction {
         switch self {
         case .activity: return "Token 活动"
         case .settings: return "管家设置"
-        case .personalX: return "个人 X · Tibo 监控"
+        case .personalX: return "登录 X · Tibo 重置提醒"
         case .add: return "添加账号"
         case .edit: return "名称与浏览器"
         case .details: return "额度详情"

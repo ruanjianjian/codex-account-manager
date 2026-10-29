@@ -292,4 +292,11 @@ import AccountCore
     }
     func applicationWillTerminate(_ notification: Notification) { interaction.stop(); hotKey.stop(); store.shutdown() }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) { completionHandler([.banner, .sound]) }
+    /// A reset notification opens Tibo's original post; only a validated x.com/thsottiaux link is followed.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let text = response.notification.request.content.userInfo["url"] as? String, let post = TiboPostLink.parse(text) {
+            DispatchQueue.main.async { NSWorkspace.shared.open(post.url) }
+        }
+        completionHandler()
+    }
 }
