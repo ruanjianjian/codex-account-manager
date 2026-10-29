@@ -4,10 +4,10 @@ public enum ClientFailure: Error, LocalizedError {
     case missingBinary, timeout, disconnected, invalidResponse, authentication, keychainAccess, service(Int), fileAccess
     public var errorDescription: String? {
         switch self {
-        case .missingBinary: return "未找到 Codex CLI，请安装后重新打开管家。"
+        case .missingBinary: return "未找到 Codex CLI，请安装后重新打开 Tibot。"
         case .timeout: return "服务响应超时，已保留上次数据；稍后自动重试。"
         case .disconnected: return "采集连接已中断，稍后会重新连接。"
-        case .invalidResponse: return "服务返回格式无法识别，请更新管家后重试。"
+        case .invalidResponse: return "服务返回格式无法识别，请更新 Tibot 后重试。"
         case .keychainAccess: return "钥匙串访问未完成，已暂停自动同步。请从此账号菜单点“刷新”手动重试。"
         case .authentication: return "登录需要重新验证，请点“重新连接”。"
         case .service(let code): return "服务暂不可用（\(code)），已保留登录；稍后重试。若持续失败，请检查网络与钥匙串权限。"
@@ -90,7 +90,7 @@ public enum ClientFailure: Error, LocalizedError {
                 }
             }
         }
-        _ = try await send("initialize", params: ["clientInfo": ["name": "codex_account_manager", "title": "Codex 账号管家", "version": "1.0.0"], "capabilities": ["experimentalApi": true]], timeout: 20)
+        _ = try await send("initialize", params: ["clientInfo": ["name": "codex_account_manager", "title": "Codex Tibot", "version": "1.0.0"], "capabilities": ["experimentalApi": true]], timeout: 20)
         try write(["method": "initialized", "params": [:]])
     }
     public func request(_ method: String, params: [String: Any] = [:], timeout: Double = 35) async throws -> [String: Any] {

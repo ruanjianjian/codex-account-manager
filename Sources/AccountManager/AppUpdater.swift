@@ -63,7 +63,9 @@ import AccountCore
         } catch let error as UpdateError { throw error } catch { throw UpdateError.download }
         let out = work.appendingPathComponent("out")
         guard await Self.run("/usr/bin/ditto", ["-x", "-k", archive.path, out.path]) else { throw UpdateError.unpack }
-        let app = out.appendingPathComponent(Bundle.main.bundleURL.lastPathComponent)
+        // Packages keep the pre-0.4.9 folder name for older updaters; find the app whatever it is called.
+        guard let app = (try? FileManager.default.contentsOfDirectory(at: out, includingPropertiesForKeys: nil))?
+            .first(where: { $0.pathExtension == "app" }) else { throw UpdateError.unpack }
         guard await Self.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path]) else { throw UpdateError.signature }
         guard let bundle = Bundle(url: app), bundle.bundleIdentifier == Bundle.main.bundleIdentifier,
               let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
@@ -71,23 +73,21 @@ import AccountCore
         return app
     }
 
-    /// Moves the running copy to the Trash, puts the new one in its place, and reopens it once this
-    /// process has quit. If the copy fails the old app goes back where it was.
+    /// Moves the running copy to the Trash, puts the new one in the same folder as Tibot.app, and reopens it
+    /// once this process has quit. If the copy fails the old app goes back where it was.
     func install(_ newApp: URL) async throws {
-        let installed = Bundle.main.bundleURL
-        guard FileManager.default.isWritableFile(atPath: installed.deletingLastPathComponent().path) else { throw UpdateError.notWritable }
+        let fm = FileManager.default, installed = Bundle.main.bundleURL
+        let target = installed.deletingLastPathComponent().appendingPathComponent(AppRename.name)
+        guard fm.isWritableFile(atPath: installed.deletingLastPathComponent().path) else { throw UpdateError.notWritable }
         var trashed: NSURL?
-        do { try FileManager.default.trashItem(at: installed, resultingItemURL: &trashed) } catch { throw UpdateError.replace }
-        guard await Self.run("/usr/bin/ditto", [newApp.path, installed.path]) else {
-            try? FileManager.default.removeItem(at: installed)
-            if let old = trashed as URL? { try? FileManager.default.moveItem(at: old, to: installed) }
+        do { try fm.trashItem(at: installed, resultingItemURL: &trashed) } catch { throw UpdateError.replace }
+        if target != installed, fm.fileExists(atPath: target.path) { try? fm.trashItem(at: target, resultingItemURL: nil) }
+        guard await Self.run("/usr/bin/ditto", [newApp.path, target.path]) else {
+            try? fm.removeItem(at: target)
+            if let old = trashed as URL? { try? fm.moveItem(at: old, to: installed) }
             throw UpdateError.replace
         }
-        let reopen = Process()
-        reopen.executableURL = URL(fileURLWithPath: "/bin/sh")
-        reopen.arguments = ["-c", "while kill -0 \"$0\" 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"$1\"",
-                            String(ProcessInfo.processInfo.processIdentifier), installed.path]
-        try reopen.run()
+        AppRename.reopen(target, after: ProcessInfo.processInfo.processIdentifier)
     }
 
     /// Runs a system tool off the main thread (unpacking and verifying take a few seconds).

@@ -140,7 +140,7 @@ enum SlotStatus: Equatable {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
             lockFD = open(root.appendingPathComponent("app.lock").path, O_CREAT | O_RDWR, 0o600)
             guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
-                let alert = NSAlert(); alert.messageText = "账号管家已经在运行"; alert.informativeText = "请从菜单栏打开现有窗口。"; alert.runModal(); exit(0)
+                let alert = NSAlert(); alert.messageText = "Tibot 已经在运行"; alert.informativeText = "请从菜单栏打开现有窗口。"; alert.runModal(); exit(0)
             }
             let stateURL = root.appendingPathComponent("state.json")
             if FileManager.default.fileExists(atPath: stateURL.path) {
@@ -153,7 +153,13 @@ enum SlotStatus: Equatable {
         }
         if shortcutChoice == "c" { shortcutChoice = "ctrl-semicolon"; UserDefaults.standard.set(shortcutChoice, forKey: "desktop.shortcut") }
         profiles = Self.readChromeProfiles()
+        let reregister = UserDefaults.standard.bool(forKey: "login.reregister")
+        if reregister {
+            UserDefaults.standard.removeObject(forKey: "login.reregister")
+            try? SMAppService.mainApp.register()
+        }
         loginAtLaunch = SMAppService.mainApp.status == .enabled
+        if reregister { saved.events.insert(ActivityEntry(loginAtLaunch ? "改名为 Tibot 后，登录 Mac 时启动保持开启。" : "改名为 Tibot 后，登录 Mac 时启动没能保留，请在设置里重新打开。"), at: 0) }
         if !preview { collectorRetry = CollectorRetryPolicy(paused: Set(UserDefaults.standard.stringArray(forKey: collectorPauseKey) ?? [])) }
         for slot in saved.accounts {
             status[slot.id] = collectorRetry.paused.contains(slot.id) ? .failure(CollectorRetryPolicy.message) : .disconnected
@@ -177,7 +183,7 @@ enum SlotStatus: Equatable {
         setupGateway()
         if CommandLine.arguments.contains("--setup-routing") { installerSetup = true }
         if !waitForPrivateBuild { continueInstallerSetup() }
-        Task { await refreshSequentially() }
+        Task { await useFileStorage(); await refreshSequentially() }
     }
     private func setupGateway() {
         gateway.onEvent = { [weak self] event in
@@ -201,7 +207,7 @@ enum SlotStatus: Equatable {
             case "interrupted": self.gatewayCaption = "回复中断，未重复执行；请在 Codex 中重试"
             case "stopped": self.fallBackToDirect("网关已停止：\(event.reason ?? "进程已退出")")
             case "rejected": if let caption = self.rejectionCaption(event) { self.gatewayCaption = caption }
-            case "local_auth_rejected": self.gatewayCaption = "桌面认证不匹配；请确认当前登录账号已连接到管家"
+            case "local_auth_rejected": self.gatewayCaption = "桌面认证不匹配；请确认当前登录账号已连接到 Tibot"
             case "local_auth_unavailable": self.gatewayCaption = "本机认证记录不可用；保留现场并检查私有文件权限"
             default: break
             }
@@ -509,7 +515,7 @@ enum SlotStatus: Equatable {
             unenrolledDesktopTicks = sharedDesktop.desktopAccountID() != nil && desktopSelection == nil ? unenrolledDesktopTicks + 1 : 0
             if unenrolledDesktopTicks >= 3 {
                 unenrolledDesktopTicks = 0
-                fallBackToDirect("Codex 当前登录的账号未连接到管家")
+                fallBackToDirect("Codex 当前登录的账号未连接到 Tibot")
             } else { do { try updateGatewayPool() } catch { gatewayCaption = error.localizedDescription } }
         }
         if !waitForPrivateBuild {
@@ -608,7 +614,7 @@ enum SlotStatus: Equatable {
                 // Some Codex builds cannot write the Keychain when started by another app; the browser sign-in still succeeded.
                 let reason = (params["error"] as? String ?? "").lowercased()
                 let keyring = !usesFileCredentials && ["keyring", "secure storage", "keychain"].contains { reason.contains($0) }
-                status[id] = .failure(keyring ? "登录已完成，但系统钥匙串无法保存。请在“管家设置”改用本地文件存储后重新连接。"
+                status[id] = .failure(keyring ? "登录已完成，但系统钥匙串无法保存。请在“Tibot 设置”改用本地文件存储后重新连接。"
                                               : "登录未完成，请重新连接。已有账号不会退出。")
                 loginQueue.removeAll()
             }
@@ -662,15 +668,12 @@ enum SlotStatus: Equatable {
     private var canMigrateCredentials: Bool {
         !usesFileCredentials && !migratingCredentials && launchingDesktop.isEmpty && loginSlotID == nil && canConnect
     }
-    func enableFileCredentials() {
-        guard canMigrateCredentials else { return }
-        let alert = NSAlert()
-        alert.messageText = "改用本机文件保存登录？"
-        alert.informativeText = "自动路由需要这个模式。登录凭据保存在本机私有目录的 auth.json，与 Codex 默认方式一致；文件不加密，同一 macOS 用户下的程序可能读取。原钥匙串记录保留。"
-        alert.addButton(withTitle: "同意并迁移")
-        alert.addButton(withTitle: "保留钥匙串")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        Task { await migrateCredentialsToFiles() }
+    /// Logins live in files only, like Codex's own ~/.codex/auth.json. A fresh install starts there; logins an older
+    /// version kept in the Keychain move over once (macOS may ask once per item, never again afterwards).
+    private func useFileStorage() async {
+        guard !preview, persistenceEnabled, !usesFileCredentials else { return }
+        if saved.accounts.isEmpty { try? sharedDesktop.fileStore.activate([]); return }
+        await migrateCredentialsToFiles()
     }
     @discardableResult private func migrateCredentialsToFiles() async -> Bool {
         guard canMigrateCredentials else { return usesFileCredentials }
@@ -689,9 +692,11 @@ enum SlotStatus: Equatable {
                 guard await client.stopAndWait() else { throw DesktopSwitchFailure.collectorStop }
             }
             clients.removeAll()
-            try sharedDesktop.migrateToFiles(accounts: saved.accounts, legacy: accountDesktop)
+            let unreadable = try sharedDesktop.migrateToFiles(accounts: saved.accounts, legacy: accountDesktop)
             for slot in saved.accounts { resumeCollector(slot.id) }
-            banner = "已改用本地文件保存登录，原钥匙串记录保留。当前 Codex 未重启。"
+            for id in unreadable { status[id] = .needsAuth }
+            record("登录已改存本机文件，以后不再访问钥匙串。")
+            if !unreadable.isEmpty { banner = "有 \(unreadable.count) 个账号的旧登录没能从钥匙串读出，请重新连接这几个账号。" }
             return true
         } catch {
             banner = "迁移未完成，仍使用原存储。" + ((error as? DesktopSwitchFailure)?.localizedDescription ?? "请检查钥匙串授权或文件权限后重试。")
@@ -737,7 +742,7 @@ enum SlotStatus: Equatable {
                 guard idleForUpdate else { updating = false; return }
                 try await updater.install(app)
                 UserDefaults.standard.set(updater.current, forKey: "update.from")
-                record("自动更新到 \(tag)，正在重启管家。")
+                record("自动更新到 \(tag)，正在重启 Tibot。")
                 NSApp.terminate(nil)
             } catch {
                 updating = false; pendingUpdate = nil; nextUpdateCheck = Date().addingTimeInterval(3600)
@@ -814,9 +819,9 @@ enum SlotStatus: Equatable {
         case .fileStorage:
             guard !installerMigrationTried else { return }
             installerMigrationTried = true
-            Task { await migrateCredentialsToFiles() }
+            Task { await useFileStorage() }
         case .desktopLogin:
-            if !installerLoginHinted { installerLoginHinted = true; banner = "登录 Codex 桌面后，管家会自动连接这个账号并开启路由。" }
+            if !installerLoginHinted { installerLoginHinted = true; banner = "登录 Codex 桌面后，Tibot 会自动连接这个账号并开启路由。" }
         case .desktopAccount:
             connectDesktopAccount()
         case .ready:
@@ -903,7 +908,7 @@ enum SlotStatus: Equatable {
         saved.accounts[i].reminderKeys = Array(saved.accounts[i].reminderKeys.suffix(120))
         record(text)
         if saved.notificationsEnabled {
-            let content = UNMutableNotificationContent(); content.title = "Codex Accounts Beta"; content.body = text
+            let content = UNMutableNotificationContent(); content.title = "Tibot"; content.body = text
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "\(id)-\(key)", content: content, trigger: nil))
         }
     }
@@ -1158,15 +1163,15 @@ enum SlotStatus: Equatable {
         if !enabled { saved.notificationsEnabled = false; persist(); return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in Task { @MainActor in
             guard let self else { return }; self.saved.notificationsEnabled = granted
-            if !granted { self.banner = "系统通知未开启，重要变化仍会显示在管家的最近动态里。" }
+            if !granted { self.banner = "系统通知未开启，重要变化仍会显示在 Tibot 的最近动态里。" }
             self.persist()
         } }
     }
     func setLoginAtLaunch(_ enabled: Bool) {
         do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             loginAtLaunch = SMAppService.mainApp.status == .enabled
-            if enabled && !loginAtLaunch { banner = "请在系统设置的登录项中允许 Codex Accounts Beta。" }
-        } catch { banner = "登录时启动未设置成功，可在系统设置 → 通用 → 登录项中添加账号管家。" }
+            if enabled && !loginAtLaunch { banner = "请在系统设置的登录项中允许 Tibot。" }
+        } catch { banner = "登录时启动未设置成功，可在系统设置 → 通用 → 登录项中添加 Tibot。" }
     }
     func shutdown() {
         // Keep the routing preference for the next launch, but leave Codex on the direct provider while we are gone.

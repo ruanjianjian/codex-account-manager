@@ -1,8 +1,8 @@
 #!/bin/zsh
 set -euo pipefail
 PROJECT_DIR="${0:A:h:h}"
-SOURCE="${PUBLIC_DIST_DIR:-$PROJECT_DIR/dist}/Codex Accounts Beta.app"
-DESTINATION="$HOME/Applications/Codex Accounts Beta.app"
+SOURCE="${PUBLIC_DIST_DIR:-$PROJECT_DIR/dist}/Tibot.app"
+DESTINATION="$HOME/Applications/Tibot.app"
 if [[ ! -d "$SOURCE" ]]; then
   "$PROJECT_DIR/scripts/build.sh"
 fi

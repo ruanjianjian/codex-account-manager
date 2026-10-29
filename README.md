@@ -1,8 +1,8 @@
-# Codex Accounts · Public Beta
+# Tibot
 
-A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 管家：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
+A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 工具：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
-**测试版 v0.4.8-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+**测试版 v0.4.9-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
 
 ## 一行安装
 
@@ -12,9 +12,9 @@ A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的
 curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/main/scripts/get.sh | bash
 ```
 
-脚本下载最新安装包并核对 SHA-256，旧版移到废纸篓（账号和设置保留），装进 `~/Applications` 后打开。管家会自己完成三步：登录凭据改存本机私有目录（与 Codex 默认方式一致，文件不加密）、连接 Codex 桌面正在登录的账号、开启自动路由。第一次装好后重启一次 Codex，让已经开着的会话也经过路由；以后更新（包括自动更新）都不用重启 Codex。
+脚本下载最新安装包并核对 SHA-256，旧版移到废纸篓（账号和设置保留），装进 `~/Applications` 后打开。Tibot 会自己完成三步：登录凭据改存本机私有目录（与 Codex 默认方式一致，文件不加密）、连接 Codex 桌面正在登录的账号、开启自动路由。第一次装好后重启一次 Codex，让已经开着的会话也经过路由；以后更新（包括自动更新）都不用重启 Codex。
 
-用命令行下载的文件没有浏览器的“来自互联网”标记，所以不会出现 macOS 的手动放行步骤；安装包仍未经 Apple 公证，可信度来自本仓库和 SHA-256 校验。装好后会自动更新：管家每 6 小时检查一次新版，在没有 Codex 请求的空闲时刻自己下载、校验（SHA-256、签名、版本）、替换并重启，账号和设置保留；设置里可以关掉「自动更新」。手动更新就重跑同一条命令，账号和登录同样保留，不用重新授权。用过私人版（数据在 `~/Library/Application Support/CodexAccountManager`）的，第一次打开会自动导入它的账号和登录；私人版还开着时会等它退出再导入。导入后只用这个版本，别再打开私人版，免得两边互相顶掉登录。只想安装、不自动设置：`CODEX_ACCOUNTS_SKIP_SETUP=1`。需要代理才能上 GitHub 时，脚本会自动使用 macOS 的系统代理（终端已设置 `https_proxy` 时以终端为准），下载失败会自动重试。
+用命令行下载的文件没有浏览器的“来自互联网”标记，所以不会出现 macOS 的手动放行步骤；安装包仍未经 Apple 公证，可信度来自本仓库和 SHA-256 校验。装好后会自动更新：Tibot 每 6 小时检查一次新版，在没有 Codex 请求的空闲时刻自己下载、校验（SHA-256、签名、版本）、替换并重启，账号和设置保留；设置里可以关掉「自动更新」。手动更新就重跑同一条命令，账号和登录同样保留，不用重新授权。用过私人版（数据在 `~/Library/Application Support/CodexAccountManager`）的，第一次打开会自动导入它的账号和登录；私人版还开着时会等它退出再导入。导入后只用这个版本，别再打开私人版，免得两边互相顶掉登录。只想安装、不自动设置：`CODEX_ACCOUNTS_SKIP_SETUP=1`。需要代理才能上 GitHub 时，脚本会自动使用 macOS 的系统代理（终端已设置 `https_proxy` 时以终端为准），下载失败会自动重试。
 
 独立社区工具，与 OpenAI、X 无隶属或背书关系。所有账号都由使用者自行登录；不附带账号、API Key、Cookie 或任何个人登录数据。
 
@@ -38,28 +38,27 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 4. 会话始终留在第一次承接它的账号上，以复用该账号的 prompt cache；该账号不可用时才换。新会话优先选择较快重置的可用账号，也可在设置「新会话优先」或点击卡片的账号名称指定；改指定不会把进行中的会话挪走。仅输出开始前的可重试失败会尝试备用账号。
 5. 关闭开关会恢复原 provider，保留期间对其他设置的修改；如网关配置项本身被其他程序改动，会拒绝覆盖并保留备份。关闭后同样重启 Codex。v0.3.0 创建的自定义 provider 会话仍需网关开启才能继续。
 
-**使用期间保持管家运行。** 私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
+**使用期间保持 Tibot 运行。** 私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
 
 这版借鉴 Magpie 的账号池、会话固定和失败接替设计，使用独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress），并未复制其源码或完整兼容层。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放；加密历史及压缩状态依赖原账号，不能任意跨账号续接，会话账号绑定会在本机保存，网关重启后继续使用。原账号额度不足或客户端在发请求前拦截时，仍会报错；不能承诺带加密历史的旧会话任意跨账号接替。原生云端/远程功能尚未完整验收。
 
-网关连 ChatGPT 时和 Codex 一样走这台 Mac 的代理（先看 `https_proxy` 等环境变量，再看系统设置里的 HTTPS / SOCKS 代理，每 30 秒重读；自动代理 PAC 不支持），需要代理才能上 ChatGPT 的网络也能用。网关只监听本机，使用独立随机密钥；只导出短期 access token，沿用原采集进程管理 OAuth 刷新。账号认证文件保持原样，不新增钥匙串访问。网关凭据及配置备份位于数据目录 `gateway/`，禁止上传。详见 [网关说明](Gateway/README.md) 与 [验证记录](docs/VALIDATION.md)。
+网关连 ChatGPT 时和 Codex 一样走这台 Mac 的代理（先看 `https_proxy` 等环境变量，再看系统设置里的 HTTPS / SOCKS 代理，每 30 秒重读；自动代理 PAC 不支持），需要代理才能上 ChatGPT 的网络也能用。网关只监听本机，使用独立随机密钥；只导出短期 access token，沿用原采集进程管理 OAuth 刷新。网关凭据及配置备份位于数据目录 `gateway/`，禁止上传。详见 [网关说明](Gateway/README.md) 与 [验证记录](docs/VALIDATION.md)。
 
-## 文件凭据模式
+## 登录保存在本机文件，不用钥匙串
 
 - 「直接切换桌面账号」已删除（它要退出 Codex、替换登录文件，并跟着 Codex 版本维护白名单）。点账号名称改为「设为新会话优先」；自动路由未开时会先询问是否开启。要换 Codex 桌面本身登录的账号，请在 Codex 里登出再登录。
-- 设置 → 登录存储 → **改用本地文件存储…**：先自行连接账号，再阅读并确认迁移。账号目录权限700、文件600；**文件本身不加密，同一macOS用户下的程序可能读取**，不再享有钥匙串逐应用授权。原钥匙串记录保留。旧条目可能分别要求授权，不能保证迁移只输入一次密码。
-- 文件模式启用后，管家的采集改读写本机文件，避免跨签名钥匙串反复授权问题。仍可能需要上游重新登录或2FA，不承诺所有系统弹窗永不出现。
-- 继续使用钥匙串时，访问失败或查询超时会暂停该账号自动重试；处理后从该账号菜单点“刷新”恢复。
-- 当前用于桌面的账号不能直接重新连接或移除；请先在 Codex 里登录其他账号。迁移为单向入口，暂不提供一键迁回钥匙串。
+- 各账号的登录保存在数据目录的 `accounts/<id>/auth.json`（目录 700、文件 600），和 Codex 自己的 `~/.codex/auth.json` 一样：只有当前 macOS 用户能读写，**文件本身不加密，同一用户下运行的程序可能读取**。好处是安装、更新、自动更新都不会弹钥匙串授权框。
+- 以前用钥匙串保存登录的旧版本，第一次打开新版时会自动把登录搬到文件里：macOS 可能每个账号问一次是否允许，只此一次，之后不再访问钥匙串。读不出来的账号（比如点了拒绝）会提示重新连接，其他账号照常。
+- 当前用于桌面的账号不能直接重新连接或移除；请先在 Codex 里登录其他账号。
 
 ## 从旧测试版升级
 
-退出旧的 **Codex Accounts Beta.app**，将旧应用移到废纸篓，再放入新版。**不要删除 `CodexAccountsPublic` 数据目录**，已连接账号和偏好会保留。升级不会自动迁移凭据；需到设置主动选择。私人构建使用独立目录，不会自动导入。
+推荐直接重跑一行安装命令，或等自动更新。手动升级时退出旧版，把旧应用（0.4.9 以前叫 **Codex Accounts Beta.app**）移到废纸篓，再放入新版。**不要删除 `CodexAccountsPublic` 数据目录**，已连接账号和偏好会保留。旧名字的 App 第一次打开会自己改名为 Tibot.app。
 
 ## 手动安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.8-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
-2. 解压，将 **Codex Accounts Beta.app** 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.9-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+2. 解压，将 App 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。装了 Codex 桌面（ChatGPT App）就自带 CLI，本版用其内置 CLI 0.165 验证；旧版 CLI 可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
 
@@ -69,9 +68,9 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 确认下载来自本仓库的 Release 且上面的 SHA-256 校验通过后，如遇到「无法验证开发者」或「Apple 无法检查是否包含恶意软件」提示：
 
-1. 先双击 **Codex Accounts Beta.app** 尝试打开；出现拦截提示时关闭提示，保留应用。
+1. 先双击 App 尝试打开；出现拦截提示时关闭提示，保留应用。
 2. 打开 Mac 的 **系统设置 → 隐私与安全性**，向下滚动到「安全性」。
-3. 找到针对 **Codex Accounts Beta** 的拦截提示，点 **「仍要打开」**。
+3. 找到针对 **Tibot** 的拦截提示，点 **「仍要打开」**。
 4. 按系统提示验证身份，并在再次出现的确认框中点 **「打开」**。
 
 系统会记住对这个 App 的允许，后续通常可直接双击打开；更新版本后可能需要再次确认。此操作只针对这个 App，**无需关闭 Gatekeeper，也无需执行解除安全限制的终端命令**。步骤依据 [Apple 官方说明：在 Mac 上安全地打开 App](https://support.apple.com/zh-cn/102445)；不同 macOS 版本的文案可能略有差异。
@@ -91,7 +90,7 @@ swift test
 ./scripts/install.sh
 ```
 
-产物默认位于 `dist/Codex Accounts Beta.app`；缓存位于 `.build`。可设置 `PUBLIC_DIST_DIR` 指定产物目录。脚本拒绝覆盖现有构建和已安装的同名应用；更新时先退出公开版，将旧 **Codex Accounts Beta.app** 移到废纸篓，再安装新版，应用数据仍保留。
+产物默认位于 `dist/Tibot.app`；缓存位于 `.build`。可设置 `PUBLIC_DIST_DIR` 指定产物目录。脚本拒绝覆盖现有构建和已安装的同名应用；更新时先退出公开版，将旧应用（Tibot.app，或 0.4.9 以前的 Codex Accounts Beta.app）移到废纸篓，再安装新版，应用数据仍保留。
 
 本工具不打包 Codex CLI，按顺序发现常见 npm、Codex/ChatGPT 应用及 Homebrew 安装位置。若提示未找到 CLI，请确认 `codex --version` 可用且位于 `/opt/homebrew/bin/codex` 或 `/usr/local/bin/codex`，或使用支持的应用内置路径。
 
@@ -99,9 +98,9 @@ swift test
 
 - 初次启动为空账号列表。自动路由在完成两步设置后自动开启；重置提醒、通知、开机启动和全局快捷键默认关闭，可在设置中启用。
 - 公开版标识为 `io.github.ruanjianjian.codex-accounts`，数据独立保存在 `~/Library/Application Support/CodexAccountsPublic/`。
-- 不自动导入其他应用的数据。自动路由会修改默认 Codex 的 provider 配置（关闭或退出管家时恢复），但不修改登录文件。WebKit 的 X 登录态和应用偏好也使用公开版独立身份。
+- 不自动导入其他应用的数据。自动路由会修改默认 Codex 的 provider 配置（关闭或退出 Tibot 时恢复），但不修改登录文件。WebKit 的 X 登录态和应用偏好也使用公开版独立身份。
 - 若已有个人构建，可同时保留；不要给两者配置相同快捷键。不同 Codex 客户端同时发起 OAuth 可能争用 localhost 回调端口，请按次完成授权。
-- 账号菜单可重新连接或移除连接。钥匙串可能要求首次访问授权；系统安全策略、更新或登录失效仍可能要求重新验证，不能保证永远不弹窗。
+- 账号菜单可重新连接或移除连接。登录失效时需要重新连接。
 
 ## Tibo 重置提醒
 
@@ -122,7 +121,7 @@ Tibo 预告重置时发系统通知（点开即原帖），时间只取帖子原
 
 ## 卸载
 
-先在公开版设置中关闭「自动账号路由」并重启 Codex，再关闭「登录 Mac 时启动」，按需从账号菜单移除账号连接，然后退出并将 **Codex Accounts Beta.app** 移到废纸篓。删除应用本身不会删除登录和缓存。如需清除，使用设置里的「打开本机数据目录」核对公开版目录后手动删除；X 网站数据由系统 WebKit 存储，应用重装后可能仍保留。不要删除其他客户端的目录或钥匙串条目。
+先在公开版设置中关闭「自动账号路由」并重启 Codex，再关闭「登录 Mac 时启动」，按需从账号菜单移除账号连接，然后退出并将 **Tibots Beta.app** 移到废纸篓。删除应用本身不会删除登录和缓存。如需清除，使用设置里的「打开本机数据目录」核对公开版目录后手动删除；X 网站数据由系统 WebKit 存储，应用重装后可能仍保留。不要删除其他客户端的目录或钥匙串条目。
 
 ## 致谢与设计参考
 
@@ -140,4 +139,4 @@ Tibo 预告重置时发系统通知（点开即原帖），时间只取帖子原
 
 ### 实时路由图
 
-开启自动路由后，组件顶部会显示 Codex → 本机网关 → 账号的实时流向。活动请求以光点和账号高亮展示，支持并发、完成和换路计数，点击标题可收起。无请求时停止动画；遵循 macOS 减少动态效果设置。统计只覆盖本次管家启动期间。展示结构参考 [Magpie](https://github.com/yetone/magpie)，使用 SwiftUI 独立实现。
+开启自动路由后，组件顶部会显示 Codex → 本机网关 → 账号的实时流向。活动请求以光点和账号高亮展示，支持并发、完成和换路计数，点击标题可收起。无请求时停止动画；遵循 macOS 减少动态效果设置。统计只覆盖本次 Tibot 启动期间。展示结构参考 [Magpie](https://github.com/yetone/magpie)，使用 SwiftUI 独立实现。

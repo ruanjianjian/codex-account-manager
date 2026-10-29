@@ -37,6 +37,7 @@ import AccountCore
         return NSSize(width: width, height: height)
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if AppRename.moveToCurrentName() { exit(0) }
         store = AppStore(preview: CommandLine.arguments.contains("--preview") || Bundle.main.bundleIdentifier?.hasSuffix("-preview") == true)
         installMainMenu()
         UNUserNotificationCenter.current().delegate = self
@@ -81,7 +82,7 @@ import AccountCore
     }
     private func makeDesktopPanel() {
         desktopPanel = DesktopPanel(contentRect: NSRect(x: 0, y: 0, width: DesktopWidgetView.size(for: store.saved.accounts.count).width, height: DesktopWidgetView.size(for: store.saved.accounts.count).height), styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
-        desktopPanel.title = "Codex Accounts Beta · 账号"
+        desktopPanel.title = "Tibot · 账号"
         desktopPanel.isOpaque = false; desktopPanel.backgroundColor = .clear
         desktopPanel.hasShadow = true; desktopPanel.hidesOnDeactivate = false
         desktopPanel.isReleasedWhenClosed = false; desktopPanel.delegate = self
@@ -103,7 +104,7 @@ import AccountCore
     /// Desktop level, like macOS's own widgets: every app window covers it, it stays on all Spaces.
     private func makeEmbeddedPanel() {
         embeddedPanel = DesktopPanel(contentRect: NSRect(origin: .zero, size: EmbeddedWidgetView.size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        embeddedPanel.title = "Codex Accounts Beta · 桌面组件"
+        embeddedPanel.title = "Tibot · 桌面组件"
         embeddedPanel.isOpaque = false; embeddedPanel.backgroundColor = .clear
         embeddedPanel.hasShadow = true; embeddedPanel.hidesOnDeactivate = false
         embeddedPanel.isReleasedWhenClosed = false; embeddedPanel.isMovableByWindowBackground = true
@@ -199,16 +200,16 @@ import AccountCore
     private func installMainMenu() {
         let main = NSMenu()
         let application = NSMenuItem(); main.addItem(application)
-        let appMenu = NSMenu(title: "Codex Accounts Beta")
+        let appMenu = NSMenu(title: "Tibot")
         application.submenu = appMenu
-        let about = NSMenuItem(title: "关于 Codex Accounts Beta", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let about = NSMenuItem(title: "关于 Tibot", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         about.target = NSApp; appMenu.addItem(about)
         let settingsItem = NSMenuItem(title: "设置…", action: #selector(settings), keyEquivalent: ",")
         settingsItem.target = self; appMenu.addItem(settingsItem)
         appMenu.addItem(.separator())
-        let hide = NSMenuItem(title: "隐藏账号管家", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hide = NSMenuItem(title: "隐藏 Tibot", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         hide.target = NSApp; appMenu.addItem(hide)
-        let quitItem = NSMenuItem(title: "退出账号管家", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出 Tibot", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self; appMenu.addItem(quitItem)
         let file = NSMenuItem(title: "窗口", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "窗口"); file.submenu = windowMenu
@@ -262,7 +263,7 @@ import AccountCore
         let refresh = NSMenuItem(title: "刷新全部账号", action: #selector(refreshAll), keyEquivalent: "r"); refresh.target = self; menu.addItem(refresh)
         let settings = NSMenuItem(title: "设置…", action: #selector(settings), keyEquivalent: ","); settings.target = self; menu.addItem(settings)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "退出账号管家", action: #selector(quit), keyEquivalent: "q"); quit.target = self; menu.addItem(quit)
+        let quit = NSMenuItem(title: "退出 Tibot", action: #selector(quit), keyEquivalent: "q"); quit.target = self; menu.addItem(quit)
         statusMenu = menu
     }
     @objc private func showWidget() { presentWidget(toggle: false) }

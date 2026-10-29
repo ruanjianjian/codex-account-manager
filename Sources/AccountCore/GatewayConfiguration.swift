@@ -7,7 +7,7 @@ public enum GatewayConfigurationError: LocalizedError {
         case .conflict: return "Codex 配置已被其他程序修改，自动恢复已停止。备份仍保留在网关目录。"
         case .credentials: return "请先连接账号并启用本地文件存储，再启用自动路由。"
         case .unavailable: return "本机网关启动失败；请检查端口占用后重试。"
-        case .desktopIdentity: return "Codex 当前登录未匹配已连接账号，或桌面凭据已过期。请先将当前账号连接到管家；未修改 Codex 配置。"
+        case .desktopIdentity: return "Codex 当前登录未匹配已连接账号，或桌面凭据已过期。请先将当前账号连接到 Tibot；未修改 Codex 配置。"
         }
     }
 }

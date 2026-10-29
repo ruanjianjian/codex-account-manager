@@ -159,15 +159,6 @@ struct GeneralSettings: View {
                             }.padding(.bottom, 8)
                         }
                     }
-                    caption("登录存储")
-                    card {
-                        row(store.usesFileCredentials ? "本机文件" : "系统钥匙串") {
-                            if !store.usesFileCredentials {
-                                Button(store.migratingCredentials ? "正在迁移…" : "改用本地文件存储…") { store.enableFileCredentials() }.controlSize(.small)
-                                    .disabled(store.preview || store.migratingCredentials || store.loginSlotID != nil || !store.launchingDesktop.isEmpty)
-                            } else { note("仅当前系统用户可读写") }
-                        }
-                    }
                     caption("最近动态")
                     card {
                         DisclosureGroup("最近 8 条") {
@@ -286,7 +277,7 @@ enum WidgetAction {
     var title: String {
         switch self {
         case .activity: return "Token 活动"
-        case .settings: return "管家设置"
+        case .settings: return "Tibot 设置"
         case .personalX: return "登录 X · Tibo 重置提醒"
         case .add: return "添加账号"
         case .edit: return "名称与浏览器"
@@ -313,7 +304,7 @@ struct WidgetActionView: View {
             case .remove(let slot):
                 VStack(alignment: .leading, spacing: 20) {
                     Text("移除“\(slot.displayName)”？").font(.title2.weight(.semibold))
-                    Text("从组件移除这个账号，并清除管家保存的登录和额度快照。Chrome 和当前 Codex 的登录不受影响。")
+                    Text("从组件移除这个账号，并清除 Tibot 保存的登录和额度快照。Chrome 和当前 Codex 的登录不受影响。")
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Spacer()

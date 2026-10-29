@@ -2,7 +2,7 @@
 set -euo pipefail
 PROJECT_DIR="${0:A:h:h}"
 OUTPUT_DIR="${PUBLIC_DIST_DIR:-$PROJECT_DIR/dist}"
-APP_DIR="$OUTPUT_DIR/Codex Accounts Beta.app"
+APP_DIR="$OUTPUT_DIR/Tibot.app"
 cd "$PROJECT_DIR"
 if [[ -e "$APP_DIR" ]]; then
   print -u2 "Output already exists: $APP_DIR. Choose a new PUBLIC_DIST_DIR or move the previous build."
@@ -25,13 +25,13 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>io.github.ruanjianjian.codex-accounts</string>
-<key>CFBundleName</key><string>Codex Accounts Beta</string>
-<key>CFBundleDisplayName</key><string>Codex Accounts Beta</string>
+<key>CFBundleName</key><string>Tibot</string>
+<key>CFBundleDisplayName</key><string>Tibot</string>
 <key>CFBundleExecutable</key><string>CodexAccounts</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.4.8</string>
-<key>CFBundleVersion</key><string>13</string>
+<key>CFBundleShortVersionString</key><string>0.4.9</string>
+<key>CFBundleVersion</key><string>14</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSMultipleInstancesProhibited</key><true/>
 <key>NSHighResolutionCapable</key><true/>
