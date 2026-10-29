@@ -7,6 +7,9 @@
 # CODEX_ACCOUNTS_SKIP_SETUP=1 only installs. CODEX_ACCOUNTS_VERSION picks a release tag.
 set -euo pipefail
 
+# Bump with every release: this script is served from main, and asking api.github.com for the newest
+# release fails on networks that reach github.com but not the API.
+LATEST="v0.4.2-beta.1"
 REPO="ruanjianjian/codex-account-manager"
 APP_NAME="Codex Accounts Beta.app"
 BUNDLE_ID="io.github.ruanjianjian.codex-accounts"
@@ -15,25 +18,39 @@ DEST="$HOME/Applications"
 say() { printf '%s\n' "$*"; }
 fail() { printf '安装未完成：%s\n' "$*" >&2; exit 1; }
 running() { pgrep -f "$APP_NAME/Contents/MacOS/" >/dev/null; }
+fetch() { curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 20 "$@"; }
+# Terminal curl ignores the macOS system proxy that browsers use; pick it up when none is set.
+use_system_proxy() {
+  [[ -n "${https_proxy:-}${HTTPS_PROXY:-}${all_proxy:-}${ALL_PROXY:-}" ]] && return 0
+  local info host port
+  info="$(scutil --proxy 2>/dev/null)" || return 0
+  value() { printf '%s\n' "$info" | awk -v key="$1" '$1 == key { print $3; exit }'; }
+  if [[ "$(value HTTPSEnable)" == "1" ]]; then
+    host="$(value HTTPSProxy)"; port="$(value HTTPSPort)"
+    if [[ -n "$host" && -n "$port" ]]; then export https_proxy="http://$host:$port"; say "使用系统代理 $host:$port"; return 0; fi
+  fi
+  if [[ "$(value SOCKSEnable)" == "1" ]]; then
+    host="$(value SOCKSProxy)"; port="$(value SOCKSPort)"
+    if [[ -n "$host" && -n "$port" ]]; then export all_proxy="socks5h://$host:$port"; say "使用系统代理 socks5 $host:$port"; fi
+  fi
+  return 0
+}
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "只支持 macOS。"
 [[ "$(uname -m)" == "arm64" ]] || fail "安装包只支持 Apple 芯片的 Mac；Intel Mac 请从源码构建。"
 (( $(sw_vers -productVersion | cut -d. -f1) >= 14 )) || fail "需要 macOS 14 或更新版本。"
 
-tag="${CODEX_ACCOUNTS_VERSION:-}"
-if [[ -z "${tag}" ]]; then
-  # Releases are pre-releases, which /releases/latest skips; the newest one is listed first.
-  tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=1" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
-fi
-[[ -n "${tag}" ]] || fail "没有找到可下载的版本，请检查网络后重试。"
+use_system_proxy
+tag="${CODEX_ACCOUNTS_VERSION:-$LATEST}"
 base="${CODEX_ACCOUNTS_BASE_URL:-https://github.com/$REPO/releases/download/${tag}}"
 zip="Codex-Accounts-${tag}-macos-arm64.zip"
+offline="连不上 GitHub。如果平时要开代理才能上 GitHub，先打开代理（或在终端设置 https_proxy）再重试。"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 say "下载 Codex Accounts ${tag} …"
-curl -fsSL -o "$work/$zip" "$base/$zip" || fail "下载失败，请检查网络后重试。"
-curl -fsSL -o "$work/SHA256SUMS.txt" "$base/SHA256SUMS.txt" || fail "校验文件下载失败。"
+fetch -o "$work/$zip" "$base/$zip" || fail "安装包下载失败：$offline"
+fetch -o "$work/SHA256SUMS.txt" "$base/SHA256SUMS.txt" || fail "校验文件下载失败：$offline"
 (cd "$work" && grep " $zip\$" SHA256SUMS.txt | shasum -a 256 -c - >/dev/null) || fail "SHA-256 校验不通过，没有改动任何东西。"
 ditto -x -k "$work/$zip" "$work/out"
 codesign --verify --deep --strict "$work/out/$APP_NAME" || fail "应用签名校验不通过，没有改动任何东西。"
