@@ -41,9 +41,9 @@ struct RoutingActivityView: View {
                     Text("连接账号后显示请求流向").font(.caption).foregroundStyle(.white.opacity(0.7)).padding(12)
                 } else {
                     ScrollView(.vertical) {
-                        // Full rate only while rockets fly or a burst plays; a slow idle twinkle otherwise.
+                        // Animate only while rockets fly or a burst plays; at rest the route is drawn once, costing no CPU.
                         let lively = !activity.active.isEmpty || Date().timeIntervalSince(activity.changedAt) < 0.6
-                        TimelineView(.animation(minimumInterval: lively ? 1.0 / 30 : 1.0 / 8, paused: !visible || reduceMotion)) { tick in
+                        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !visible || reduceMotion || !lively)) { tick in
                             flow(time: tick.date.timeIntervalSinceReferenceDate)
                         }.frame(height: CGFloat(max(3, slots.count)) * 23)
                     }.frame(height: flowHeight).scrollIndicators(.hidden)
@@ -208,7 +208,7 @@ struct RoutingLane: View {
     var body: some View {
         let activity = store.routingActivity
         let lively = !activity.active.isEmpty || Date().timeIntervalSince(activity.changedAt) < 0.6
-        TimelineView(.animation(minimumInterval: lively ? 1.0 / 30 : 1.0 / 8, paused: !visible || reduceMotion)) { tick in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !visible || reduceMotion || !lively)) { tick in
             Canvas { context, size in draw(PixelBrush(context: context), size: size, time: tick.date.timeIntervalSinceReferenceDate) }
         }
         .frame(height: Self.height).allowsHitTesting(false)

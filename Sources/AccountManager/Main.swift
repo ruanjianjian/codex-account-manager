@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UserNotifications
 import AccountCore
@@ -25,6 +26,9 @@ import AccountCore
     private let hotKey = GlobalHotKey()
     private let interaction = PanelInteraction()
     private var shortcutPresented = false
+    private var routingWatch: AnyCancellable?
+    private var hopTimer: Timer?
+    private var hopFrame = 0
     private var preferredWidgetSize: NSSize? {
         let defaults = UserDefaults.standard
         let width = defaults.double(forKey: "desktop.width")
@@ -43,6 +47,9 @@ import AccountCore
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem.button?.toolTip = "悬停查看账号；移开收起；右键打开菜单"
         store.onChange = { [weak self] in self?.updateMenu() }
+        routingWatch = store.$routingActivity.sink { [weak self] activity in
+            DispatchQueue.main.async { self?.animateStatusIcon(busy: !activity.active.isEmpty) }
+        }
         makeDesktopPanel()
         makeEmbeddedPanel()
         if let button = statusItem.button {
@@ -214,6 +221,23 @@ import AccountCore
         }
         main.addItem(edit); NSApp.mainMenu = main
     }
+    /// The menu-bar tile hops while Codex requests are being routed, and rests when they finish.
+    private func animateStatusIcon(busy: Bool) {
+        guard busy, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            hopTimer?.invalidate(); hopTimer = nil; hopFrame = 0
+            statusItem.button?.image = StatusIcon.image
+            return
+        }
+        guard hopTimer == nil else { return }
+        hopTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.statusItem.button?.image = StatusIcon.hop[self.hopFrame % StatusIcon.hop.count]
+                self.hopFrame += 1
+            }
+        }
+        RunLoop.main.add(hopTimer!, forMode: .common)
+    }
     private func updateMenu() {
         statusItem.button?.title = " " + (store.preview ? "额度预览" : store.menuTitle)
         let menu = NSMenu()
@@ -294,8 +318,8 @@ import AccountCore
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) { completionHandler([.banner, .sound]) }
     /// A reset notification opens Tibo's original post; only a validated x.com/thsottiaux link is followed.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let text = response.notification.request.content.userInfo["url"] as? String, let post = TiboPostLink.parse(text) {
-            DispatchQueue.main.async { NSWorkspace.shared.open(post.url) }
+        if let text = response.notification.request.content.userInfo["url"] as? String, let url = TiboPostLink.parse(text)?.url {
+            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
         }
         completionHandler()
     }
