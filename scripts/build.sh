@@ -19,6 +19,7 @@ cp .build/gateway/AccountsGateway "$APP_DIR/Contents/Helpers/AccountsGateway"
 cp Gateway/THIRD-PARTY-NOTICES.txt "$APP_DIR/Contents/Resources/THIRD-PARTY-NOTICES.txt"
 cp Gateway/README.md "$APP_DIR/Contents/Resources/Gateway-NOTICE.md"
 cp LICENSE "$APP_DIR/Contents/Resources/LICENSE"
+cp Resources/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -27,9 +28,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>Codex Accounts Beta</string>
 <key>CFBundleDisplayName</key><string>Codex Accounts Beta</string>
 <key>CFBundleExecutable</key><string>CodexAccounts</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.4.2</string>
-<key>CFBundleVersion</key><string>7</string>
+<key>CFBundleShortVersionString</key><string>0.4.3</string>
+<key>CFBundleVersion</key><string>8</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSMultipleInstancesProhibited</key><true/>
 <key>NSHighResolutionCapable</key><true/>
