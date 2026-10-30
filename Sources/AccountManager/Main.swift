@@ -103,7 +103,7 @@ import AccountCore
     }
     /// Desktop level, like macOS's own widgets: every app window covers it, it stays on all Spaces.
     private func makeEmbeddedPanel() {
-        embeddedPanel = DesktopPanel(contentRect: NSRect(origin: .zero, size: EmbeddedWidgetView.size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        embeddedPanel = DesktopPanel(contentRect: NSRect(origin: .zero, size: EmbeddedWidgetView.size(for: store.saved.accounts.count)), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         embeddedPanel.title = "Tibot · 桌面组件"
         embeddedPanel.isOpaque = false; embeddedPanel.backgroundColor = .clear
         embeddedPanel.hasShadow = true; embeddedPanel.hidesOnDeactivate = false
@@ -115,7 +115,7 @@ import AccountCore
             || !NSScreen.screens.contains(where: { $0.visibleFrame.contains(NSPoint(x: embeddedPanel.frame.midX, y: embeddedPanel.frame.midY)) }) {
             resetEmbeddedPosition()
         }
-        embeddedPanel.setContentSize(EmbeddedWidgetView.size)
+        embeddedPanel.setContentSize(EmbeddedWidgetView.size(for: store.saved.accounts.count))
         embeddedPanel.setFrameAutosaveName("CodexEmbeddedWidget")
     }
     @objc private func resetEmbeddedPosition() {
@@ -139,6 +139,12 @@ import AccountCore
         }
         desktopPanel.level = (store.desktopPinned || shortcutPresented) ? .floating : NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         if store.desktopVisible { desktopPanel.orderFrontRegardless() } else { desktopPanel.orderOut(nil) }
+        // The widget grows a row past six accounts; keep its top edge where the user put it.
+        let embedded = EmbeddedWidgetView.size(for: store.saved.accounts.count)
+        if embeddedPanel.frame.size != embedded {
+            let top = embeddedPanel.frame.maxY
+            embeddedPanel.setContentSize(embedded); embeddedPanel.setFrameOrigin(NSPoint(x: embeddedPanel.frame.minX, y: top - embedded.height))
+        }
         if store.embeddedVisible { embeddedPanel.orderFrontRegardless() } else { embeddedPanel.orderOut(nil) }
     }
     private func registerShortcut() {

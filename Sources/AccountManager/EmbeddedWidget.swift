@@ -1,114 +1,158 @@
 import SwiftUI
 import AccountCore
 
-/// Wide account cards that live on the desktop beside macOS's own widgets.
-/// Same palette and cards as the menu-bar dashboard, laid out in one row.
+/// The desktop widget: accounts as stepping stones, the >_ tile standing on the one Codex uses now.
+/// When that account runs out, routing moves on and the tile hops to the next stone.
 struct EmbeddedWidgetView: View {
-    static let size = NSSize(width: 549, height: 335)
+    static let perRow = 6
+    static func size(for count: Int) -> NSSize {
+        let columns = min(perRow, max(1, count)), rows = max(1, (count + perRow - 1) / perRow)
+        return NSSize(width: max(360, 32 + CGFloat(columns) * 96 + CGFloat(columns - 1) * 10), height: 186 + CGFloat(rows - 1) * 100)
+    }
     @ObservedObject var store: AppStore
     let present: (WidgetAction) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var accounts: [AccountSlot] { store.saved.accounts }
-    private var columns: Int { min(4, max(1, accounts.count)) }
-    private var status: String {
-        guard store.gatewayEnabled else { return "\(store.connectedCount)/\(accounts.count) 已连接" }
-        let preferred = store.gatewayPreferred.isEmpty ? "自动选路" : "优先 " + (store.slot(store.gatewayPreferred)?.displayName ?? "指定账号")
-        let activity = store.routingActivity
-        return !store.gatewayReady ? "等待网关" : (activity.active.isEmpty ? preferred : "\(activity.active.count) 个请求中")
-    }
+    private let green = Color(red: 0.16, green: 0.70, blue: 0.33)
+    private let orange = Color(red: 0.85, green: 0.38, blue: 0.05)
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Text("CODEX / ACCOUNTS").font(.system(size: 12, weight: .heavy)).tracking(0.6).allowsHitTesting(false)
-                Spacer(minLength: 8)
-                if let alert = store.resetAlert {
-                    Link(destination: alert.url) {
-                        Label(alert.text, systemImage: "bolt.fill").font(.system(size: 10, weight: .semibold)).lineLimit(1)
-                    }.foregroundStyle(Color(red: 0.85, green: 0.38, blue: 0.05)).help("打开 Tibo 原帖")
-                } else if !store.gatewayEnabled && store.routingSetup != .ready && !store.preview {
-                    Button { present(.settings) } label: {
-                        Text("自动路由还差 \(store.routingSetup.remaining) 步 ›").font(.system(size: 10, weight: .semibold))
-                    }.foregroundStyle(Color(red: 0, green: 0.46, blue: 0.53)).help("打开设置完成自动路由")
-                } else {
-                    Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).allowsHitTesting(false)
-                }
-                if store.gatewayEnabled { RoutingHealthDots(store: store).foregroundStyle(.secondary) }
-                Button { store.refreshAll() } label: { Image(systemName: "arrow.clockwise") }
-                    .disabled(store.isBusy || store.preview).help("刷新所有账号").accessibilityLabel("刷新组件额度")
-                Button { present(.settings) } label: { Image(systemName: "slider.horizontal.3") }
-                    .help("设置").accessibilityLabel("打开设置")
-            }.buttonStyle(.plain).font(.system(size: 12)).frame(height: 20)
+        VStack(spacing: 0) {
+            header
+            Spacer(minLength: 10)
             if accounts.isEmpty {
-                Button("＋ 添加第一个账号") { present(.add) }.buttonStyle(.plain).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Button("＋ 添加第一个账号") { present(.add) }.buttonStyle(.plain).font(.system(size: 13, weight: .medium))
             } else {
-                if store.gatewayEnabled { RoutingLane(store: store, columns: columns, spacing: 8).padding(.bottom, -10) }
-                if accounts.count <= 4 {
-                    HStack(spacing: 8) {
-                        ForEach(Array(accounts.enumerated()), id: \.element.id) { index, slot in card(slot, index: index) }
-                    }.frame(maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: columns), spacing: 8) {
-                            ForEach(Array(accounts.enumerated()), id: \.element.id) { index, slot in card(slot, index: index).frame(height: 150) }
-                        }
-                    }.scrollIndicators(.hidden).frame(maxHeight: .infinity)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: min(Self.perRow, accounts.count)), spacing: 18) {
+                    ForEach(accounts, id: \.id) { stone($0) }
                 }
-                HStack(alignment: .bottom, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("近 7 天").font(.system(size: 9, weight: .bold))
-                        Text("Token").font(.system(size: 9)).foregroundStyle(.secondary)
-                    }.frame(width: 44, alignment: .leading).padding(.bottom, 14)
-                    TokenBars(days: store.tokenDays(count: 7), height: 30)
-                }.frame(height: 50).contentShape(Rectangle()).onTapGesture { present(.activity) }
-                    .help("查看 Token 活动")
+                .overlayPreferenceValue(TileSpot.self) { spot in
+                    GeometryReader { proxy in
+                        if let spot {
+                            let rect = proxy[spot]
+                            Tile(busy: store.routingActivity.count(for: activeID ?? "") > 0, reduceMotion: reduceMotion)
+                                .keyframeAnimator(initialValue: 0.0, trigger: activeID) { tile, lift in tile.offset(y: lift) } keyframes: { _ in
+                                    KeyframeTrack {
+                                        CubicKeyframe(reduceMotion ? 0 : -20, duration: 0.2)
+                                        CubicKeyframe(0, duration: 0.24)
+                                    }
+                                }
+                                .position(x: rect.midX, y: rect.maxY - 14)
+                                .animation(reduceMotion ? nil : .spring(response: 0.44, dampingFraction: 0.8), value: activeID)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                }
             }
+            Spacer(minLength: 10)
+            footer
         }
-        .padding(14).frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(16).frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(Color(white: 0.12))
-        // Anything that is not a control moves the widget: header, lane, card faces and margins.
+        // Anything that is not a control moves the widget.
         .background { ZStack { RoundedRectangle(cornerRadius: 20).fill(Color(white: 0.97)); DragSurface() } }
         .preferredColorScheme(.light)
     }
 
-    private func card(_ slot: AccountSlot, index: Int) -> some View {
-        let colors = CoverPalette.all[index % CoverPalette.all.count]
-        let windows = slot.snapshot?.rates.windows ?? []
-        let remaining = windows.compactMap(\.remaining).min()
-        let reset = windows.compactMap(\.resetDate).min()
-        let banked = slot.snapshot?.rates.rateLimitResetCredits?.availableCount
-        let routing = store.routingActivity.count(for: slot.id) > 0
-        return VStack(alignment: .leading, spacing: 0) {
-            Button { store.chooseAccount(slot.id) } label: {
-                Text(slot.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.75)
-            }.buttonStyle(.plain)
-                .disabled(store.preview || slot.expectedAccountID == nil)
-                .help(store.accountActionLabel(slot.id))
-            Spacer(minLength: 4).allowsHitTesting(false)
-            if let remaining {
-                HStack(alignment: .firstTextBaseline, spacing: 1) {
-                    Text("\(Int(remaining))").font(.system(size: 34, weight: .black)).tracking(-1.2)
-                    Text("%").font(.system(size: 14, weight: .bold))
-                }.foregroundStyle(colors.ink).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7).allowsHitTesting(false)
-                    .accessibilityLabel("\(slot.displayName) 最低窗口余量 \(Int(remaining))%")
-            } else {
-                Button { store.connectOrContinue(slot.id) } label: {
-                    Text("＋ 连接").font(.system(size: 13, weight: .semibold)).foregroundStyle(colors.ink)
-                }.buttonStyle(.plain).disabled(!store.canOpenConnection(slot.id))
-            }
-            Spacer(minLength: 4)
-            Text(reset.map { Presentation.countdown($0, now: store.now).replacingOccurrences(of: "后", with: "后重置") } ?? (store.status[slot.id]?.message ?? "等待同步"))
-                .font(.system(size: 10)).lineLimit(1).minimumScaleFactor(0.8).allowsHitTesting(false)
-            HStack {
-                Text("BANKED RESET").font(.system(size: 8, weight: .bold)).tracking(0.5)
-                Spacer(minLength: 2)
-                Text(banked.map(String.init) ?? "—").font(.system(size: 11, weight: .bold)).monospacedDigit()
-            }.padding(.top, 5).allowsHitTesting(false)
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("Tibot").font(.system(size: 13, weight: .semibold)).allowsHitTesting(false)
+            if store.gatewayEnabled { RoutingHealthDots(store: store).foregroundStyle(.secondary) }
+            Spacer(minLength: 8)
+            Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).allowsHitTesting(false)
+            Button { store.refreshAll() } label: { Image(systemName: "arrow.clockwise") }
+                .disabled(store.isBusy || store.preview).help("刷新所有账号").accessibilityLabel("刷新组件额度")
+            Button { present(.settings) } label: { Image(systemName: "slider.horizontal.3") }
+                .help("设置").accessibilityLabel("打开设置")
+        }.buttonStyle(.plain).font(.system(size: 12)).frame(height: 20)
+    }
+    private var status: String {
+        guard store.gatewayEnabled else { return "\(store.connectedCount)/\(accounts.count) 已连接" }
+        guard store.gatewayReady else { return "等待网关" }
+        let busy = store.routingActivity.active.count
+        if busy > 0 { return "\(busy) 个请求中" }
+        return store.gatewayPreferred.isEmpty ? "自动选路" : "优先 " + (store.slot(store.gatewayPreferred)?.displayName ?? "指定账号")
+    }
+    @ViewBuilder private var footer: some View {
+        if let alert = store.resetAlert {
+            Link(destination: alert.url) {
+                Label(alert.text, systemImage: "bolt.fill").font(.system(size: 10, weight: .semibold)).lineLimit(1)
+            }.foregroundStyle(orange).help("打开 Tibo 原帖")
+        } else if !store.gatewayEnabled && store.routingSetup != .ready && !store.preview {
+            Button { present(.settings) } label: {
+                Text("自动路由还差 \(store.routingSetup.remaining) 步 ›").font(.system(size: 10, weight: .semibold))
+            }.buttonStyle(.plain).foregroundStyle(Color(red: 0, green: 0.46, blue: 0.53)).help("打开设置完成自动路由")
+        } else {
+            Text(store.gatewayEnabled ? "用完自动跳到下一块" : "自动路由已关闭").font(.system(size: 10)).foregroundStyle(.secondary).allowsHitTesting(false)
         }
-        .padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .foregroundStyle(.white).background { colors.paper.allowsHitTesting(false) }
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 12, topTrailingRadius: 12))
-        .overlay(alignment: .topTrailing) {
-            if routing { Circle().fill(colors.ink).frame(width: 6, height: 6).padding(8).help("请求处理中") }
+    }
+
+    private func remaining(_ slot: AccountSlot) -> Double? { slot.snapshot?.rates.windows.compactMap(\.remaining).min() }
+    private func usable(_ slot: AccountSlot) -> Bool { (remaining(slot) ?? 0) > 0 }
+    /// The account Codex is on now: the one routing last used while it still has quota, else the one routing
+    /// would pick next. Without routing it is the account the desktop is signed in to.
+    private var activeID: String? {
+        guard store.gatewayEnabled else {
+            return store.desktopAccountID.flatMap { id in accounts.first { $0.expectedAccountID == id }?.id }
+        }
+        if let id = store.gatewayAccount ?? store.routingActivity.lastAccount, let slot = store.slot(id), usable(slot) { return id }
+        if let slot = store.slot(store.gatewayPreferred), usable(slot) { return slot.id }
+        return accounts.filter(usable).max { (remaining($0) ?? 0) < (remaining($1) ?? 0) }?.id
+    }
+
+    private func stone(_ slot: AccountSlot) -> some View {
+        let left = remaining(slot)
+        let reset = slot.snapshot?.rates.windows.compactMap(\.resetDate).min()
+        let active = slot.id == activeID, spent = left.map { $0 <= 0 } ?? false
+        return VStack(spacing: 6) {
+            Color.clear.frame(height: 30)
+                .anchorPreference(key: TileSpot.self, value: .bounds) { active ? $0 : nil }
+            Capsule().fill(left == nil ? Color.clear : active ? green : Color(white: spent ? 0.9 : 0.8)).frame(height: 8)
+                .overlay { if left == nil { Capsule().strokeBorder(Color(white: 0.75), style: StrokeStyle(lineWidth: 1, dash: [3, 3])) } }
+            Button { store.chooseAccount(slot.id) } label: {
+                Text(slot.displayName).font(.system(size: 12, weight: active ? .semibold : .regular)).lineLimit(1).minimumScaleFactor(0.75)
+                    .foregroundStyle(active ? Color(white: 0.12) : spent ? Color(white: 0.6) : Color(white: 0.35))
+            }.buttonStyle(.plain).disabled(store.preview || slot.expectedAccountID == nil).help(store.accountActionLabel(slot.id))
+            if let left {
+                Text(spent ? Self.untilReset(reset, now: store.now) : "\(Int(left))%")
+                    .font(.system(size: 11, weight: active ? .semibold : .regular)).monospacedDigit().lineLimit(1)
+                    .foregroundStyle(active ? green : spent ? Color(white: 0.6) : left < 15 ? orange : Color(white: 0.45))
+                    .allowsHitTesting(false)
+            } else {
+                Button("＋ 连接") { store.connectOrContinue(slot.id) }.buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium)).disabled(!store.canOpenConnection(slot.id))
+            }
         }
         .accessibilityElement(children: .contain)
+        .accessibilityLabel(slot.displayName + (active ? "，正在用" : "") + (left.map { spent ? "，额度用完，" + Self.untilReset(reset, now: store.now) + "恢复" : "，余量 \(Int($0))%" } ?? "，未连接"))
+    }
+    /// "5 天后" / "3 小时后" / "20 分钟后": how long until a spent account comes back.
+    static func untilReset(_ date: Date?, now: Date) -> String {
+        guard let date else { return "等待重置" }
+        let seconds = date.timeIntervalSince(now)
+        if seconds <= 0 { return "即将恢复" }
+        if seconds >= 86_400 { return "\(Int(seconds / 86_400)) 天后" }
+        if seconds >= 3_600 { return "\(Int(seconds / 3_600)) 小时后" }
+        return "\(max(1, Int(seconds / 60))) 分钟后"
+    }
+}
+
+/// Where the tile stands: the top slot of the active account's stone.
+private struct TileSpot: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = value ?? nextValue() }
+}
+
+/// The brand tile. It bobs while a request is running on its account; at rest nothing animates.
+private struct Tile: View {
+    let busy: Bool
+    let reduceMotion: Bool
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !busy || reduceMotion)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            RoundedRectangle(cornerRadius: 7).fill(Color(white: 0.1)).frame(width: 28, height: 28)
+                .overlay(Text(">_").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundStyle(.white))
+                .offset(y: busy && !reduceMotion ? -abs(sin(t * 7)) * 3 : 0)
+        }
     }
 }

@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Bump with every release: this script is served from main, and asking api.github.com for the newest
 # release fails on networks that reach github.com but not the API.
-LATEST="v0.4.13-beta.1"
+LATEST="v0.4.14-beta.1"
 REPO="ruanjianjian/codex-account-manager"
 APP_NAME="Tibot.app"
 OLD_APP="Codex Accounts Beta.app"   # before 0.4.9; the zip still uses this folder name for older updaters
