@@ -30,23 +30,57 @@ struct TokenBars: View {
         }
     }
 }
+/// The panel's last weeks of tokens, a week per page: swipe or use the arrows to go back, the dots show where you are.
 struct TokenActivityMini: View {
     @ObservedObject var store: AppStore
     let openDetails: () -> Void
+    /// The week shown, counted back from this one. It starts empty and is set once the strip is on screen, so the
+    /// strip opens on this week rather than its first (oldest) page.
+    @State private var weeksAgo: Int?
     var body: some View {
+        let weeks = store.tokenWeeks()
+        let shown = min(weeksAgo ?? 0, weeks.count - 1)
         VStack(spacing: 7) {
-            HStack {
-                Text("TOKEN 活动 · 近 7 天").font(.system(size: 10, weight: .bold))
+            HStack(spacing: 8) {
+                Text("TOKEN 活动 · " + TokenActivity.weekTitle(weeks[weeks.count - 1 - shown], weeksAgo: shown)).font(.system(size: 10, weight: .bold))
                 Spacer()
-                Button("查看更多", action: openDetails).font(.system(size: 10)).buttonStyle(.plain)
+                Group {
+                    Button { show(shown + 1) } label: { Image(systemName: "chevron.left") }
+                        .disabled(shown >= weeks.count - 1).help("上一周").accessibilityLabel("上一周")
+                    Button { show(shown - 1) } label: { Image(systemName: "chevron.right") }
+                        .disabled(shown == 0).help("下一周").accessibilityLabel("下一周")
+                }.font(.system(size: 10, weight: .semibold))
+                Button("查看更多", action: openDetails).font(.system(size: 10))
+            }.buttonStyle(.plain)
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 0) {
+                    ForEach((0 ..< weeks.count).reversed(), id: \.self) { ago in
+                        TokenBars(days: weeks[weeks.count - 1 - ago], showValues: true).containerRelativeFrame(.horizontal)
+                    }
+                }.scrollTargetLayout()
             }
-            TokenBars(days: store.tokenDays(count: 7), showValues: true)
+            .scrollTargetBehavior(.paging).scrollPosition(id: $weeksAgo).scrollIndicators(.never)
+            .onAppear { if weeksAgo == nil { weeksAgo = 0 } }
             HStack {
                 Text(store.usageCaption())
                 Spacer()
                 Text("浅色为部分账号 · — 为缺失")
             }.font(.system(size: 9)).foregroundStyle(.secondary)
+                .overlay { PageDots(count: weeks.count, current: weeks.count - 1 - shown) }
         }.frame(height: 112)
+    }
+    private func show(_ week: Int) { withAnimation(.easeInOut(duration: 0.3)) { weeksAgo = week } }
+}
+/// Up to seven dots for the pages, sliding along with the current one.
+private struct PageDots: View {
+    let count: Int, current: Int
+    var body: some View {
+        let first = min(max(0, current - 3), max(0, count - 7))
+        HStack(spacing: 4) {
+            ForEach(first ..< min(count, first + 7), id: \.self) { page in
+                Circle().fill(page == current ? Color.primary : Color.primary.opacity(0.2)).frame(width: 5, height: 5)
+            }
+        }.accessibilityHidden(true)
     }
 }
 struct TokenActivityDetails: View {
