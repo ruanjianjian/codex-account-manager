@@ -12,6 +12,7 @@ struct EmbeddedWidgetView: View {
     @ObservedObject var store: AppStore
     let present: (WidgetAction) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hopping = false
     private var accounts: [AccountSlot] { store.saved.accounts }
     private let green = Color(red: 0.16, green: 0.70, blue: 0.33)
     private let orange = Color(red: 0.85, green: 0.38, blue: 0.05)
@@ -30,14 +31,14 @@ struct EmbeddedWidgetView: View {
                     GeometryReader { proxy in
                         if let spot {
                             let rect = proxy[spot]
-                            Tile(busy: store.routingActivity.count(for: activeID ?? "") > 0, reduceMotion: reduceMotion)
+                            Tile(busy: store.routingActivity.count(for: activeID ?? "") > 0, hopping: hopping, reduceMotion: reduceMotion)
                                 .keyframeAnimator(initialValue: 0.0, trigger: activeID) { tile, lift in tile.offset(y: lift) } keyframes: { _ in
                                     KeyframeTrack {
                                         CubicKeyframe(reduceMotion ? 0 : -20, duration: 0.2)
                                         CubicKeyframe(0, duration: 0.24)
                                     }
                                 }
-                                .position(x: rect.midX, y: rect.maxY - 14)
+                                .position(x: rect.midX, y: rect.maxY - 15)
                                 .animation(reduceMotion ? nil : .spring(response: 0.44, dampingFraction: 0.8), value: activeID)
                                 .allowsHitTesting(false)
                         }
@@ -49,6 +50,12 @@ struct EmbeddedWidgetView: View {
         }
         .padding(16).frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(Color(white: 0.12))
+        // The mascot squints (> <) for the length of a hop.
+        .onChange(of: activeID) { _, _ in
+            guard !reduceMotion else { return }
+            hopping = true
+            Task { try? await Task.sleep(for: .milliseconds(460)); hopping = false }
+        }
         // Anything that is not a control moves the widget.
         .background { ZStack { RoundedRectangle(cornerRadius: 20).fill(Color(white: 0.97)); DragSurface() } }
         .preferredColorScheme(.light)
@@ -166,16 +173,61 @@ private struct TileSpot: PreferenceKey {
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = value ?? nextValue() }
 }
 
-/// The brand tile. It bobs while a request is running on its account; at rest nothing animates.
+/// Tibot's mascot on the active stone. It squints while hopping, blinks every few seconds and bobs while a request
+/// is running on its account; otherwise nothing redraws.
 private struct Tile: View {
     let busy: Bool
+    let hopping: Bool
     let reduceMotion: Bool
+    @State private var blinking = false
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !busy || reduceMotion)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
-            RoundedRectangle(cornerRadius: 7).fill(Color(white: 0.1)).frame(width: 28, height: 28)
-                .overlay(Text(">_").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundStyle(.white))
+            Dango(mood: hopping ? .hop : blinking ? .blink : .open).frame(width: 30, height: 30)
                 .offset(y: busy && !reduceMotion ? -abs(sin(t * 7)) * 3 : 0)
         }
+        .task(id: reduceMotion) {
+            guard !reduceMotion else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Double.random(in: 2.6...4.8)))
+                blinking = true
+                try? await Task.sleep(for: .milliseconds(140))
+                blinking = false
+            }
+        }
+    }
+}
+
+/// 「终端团子」: the dark >_ tile grown soft, with eyes, blush and the "_" as a mint smile.
+struct Dango: View {
+    enum Mood { case open, blink, hop }
+    let mood: Mood
+    var body: some View {
+        Canvas { context, size in
+            let s = min(size.width, size.height), ey = s * 0.42, er = s * 0.105, line = max(1.2, s * 0.05)
+            context.fill(Path(roundedRect: CGRect(x: 0, y: 0, width: s, height: s), cornerRadius: s * 0.3), with: .color(Color(white: 0.11)))
+            for side in [-1.0, 1.0] {
+                let cx = s / 2 + side * s * 0.2
+                switch mood {
+                case .open:
+                    context.fill(Path(ellipseIn: CGRect(x: cx - er, y: ey - er * 1.15, width: er * 2, height: er * 2.3)), with: .color(.white))
+                    let pr = er * 0.55
+                    context.fill(Path(ellipseIn: CGRect(x: cx + s * 0.02 - pr, y: ey + s * 0.012 - pr, width: pr * 2, height: pr * 2)), with: .color(Color(white: 0.11)))
+                case .blink:
+                    context.fill(Path(roundedRect: CGRect(x: cx - er * 0.85, y: ey - line / 2, width: er * 1.7, height: line), cornerRadius: line / 2), with: .color(.white))
+                case .hop:
+                    var chevron = Path()
+                    chevron.move(to: CGPoint(x: cx + side * er, y: ey - er * 0.8))
+                    chevron.addLine(to: CGPoint(x: cx - side * er * 0.6, y: ey))
+                    chevron.addLine(to: CGPoint(x: cx + side * er, y: ey + er * 0.8))
+                    context.stroke(chevron, with: .color(.white), style: StrokeStyle(lineWidth: line, lineCap: .round, lineJoin: .round))
+                }
+                let blush = CGRect(x: s / 2 + side * s * 0.33 - s * 0.085, y: s * 0.64 - s * 0.048, width: s * 0.17, height: s * 0.096)
+                context.fill(Path(ellipseIn: blush), with: .color(Color(red: 1, green: 0.5, blue: 0.59).opacity(0.6)))
+            }
+            let mouth = CGRect(x: s / 2 - s * 0.09, y: s * 0.68, width: s * 0.18, height: max(1.5, s * 0.05))
+            context.fill(Path(roundedRect: mouth, cornerRadius: mouth.height / 2), with: .color(Color(red: 0.19, green: 0.82, blue: 0.35)))
+        }
+        .accessibilityHidden(true)
     }
 }
