@@ -83,7 +83,7 @@ struct DesktopWidgetView: View {
             HStack(spacing: 10) {
                 ZStack(alignment: .leading) {
                     DragSurface()
-                    Text("CODEX / ACCOUNTS").font(.system(size: 12, weight: .heavy)).tracking(0.6).allowsHitTesting(false)
+                    Text("Tibot").font(.system(size: 13, weight: .semibold)).allowsHitTesting(false)
                 }.frame(maxWidth: .infinity).frame(height: 24)
                 Button { present(.add) } label: { Image(systemName: "plus").frame(width: 22, height: 24).contentShape(Rectangle()) }
                     .help("添加账号").accessibilityLabel("添加新的Codex账号")
