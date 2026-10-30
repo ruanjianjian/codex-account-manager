@@ -336,6 +336,29 @@ enum SlotStatus: Equatable {
         return "\(best.displayName) \(Int(remaining))%"
     }
     func slot(_ id: String) -> AccountSlot? { saved.accounts.first { $0.id == id } }
+    /// The account Codex is on now: the one routing last used while it still has quota, else the one routing
+    /// would pick next. Without routing it is the account the desktop is signed in to.
+    var currentAccountID: String? {
+        guard gatewayEnabled else {
+            return desktopAccountID.flatMap { id in saved.accounts.first { $0.expectedAccountID == id }?.id }
+        }
+        func usable(_ slot: AccountSlot) -> Bool { (slot.snapshot?.rates.windows.compactMap(\.remaining).min() ?? 0) > 0 }
+        if let id = gatewayAccount ?? routingActivity.lastAccount, let slot = self.slot(id), usable(slot) { return id }
+        if let slot = self.slot(gatewayPreferred), usable(slot) { return slot.id }
+        // Automatic routing: the account whose quota resets first, like the gateway picks.
+        let reset = { (slot: AccountSlot) in slot.snapshot?.rates.windows.quotaReset ?? .infinity }
+        return saved.accounts.filter(usable).min { reset($0) < reset($1) }?.id
+    }
+    var mascotAccounts: [Mascot.Account] {
+        saved.accounts.map { Mascot.Account(id: $0.id, name: $0.displayName, windows: $0.snapshot?.rates.windows ?? []) }
+    }
+    /// What the mascot says at the top of the panel.
+    func mascotLine(switched: Mascot.Switch?) -> Mascot.Line {
+        var input = Mascot.Input(accounts: mascotAccounts)
+        input.routing = gatewayEnabled; input.gatewayReady = gatewayReady; input.current = currentAccountID
+        input.cacheHit = routingActivity.lastCache?.hit; input.switched = switched; input.resetAlert = resetAlert?.text; input.now = now
+        return Mascot.line(input)
+    }
     private func index(_ id: String) -> Int? { saved.accounts.firstIndex { $0.id == id } }
     private static func binary() throws -> URL {
         let paths = [
@@ -1077,6 +1100,10 @@ enum SlotStatus: Equatable {
         guard let notice = ResetNotice.message(for: signal, accounts: accounts, now: Date()) else { return }
         let content = UNMutableNotificationContent(); content.title = notice.title; content.body = notice.body; content.sound = .default
         if let link = signal.originalURL { content.userInfo = ["url": link.absoluteString] }
+        // The star-eyed mascot as the thumbnail; the system moves the file into its own store.
+        let thumbnail = FileManager.default.temporaryDirectory.appendingPathComponent("tibot-reset-\(UUID().uuidString).png")
+        if let png = Dango.png(.star), (try? png.write(to: thumbnail)) != nil,
+           let attachment = try? UNNotificationAttachment(identifier: "mascot", url: thumbnail) { content.attachments = [attachment] }
         let request = UNNotificationRequest(identifier: "reset-" + signal.key, content: content, trigger: nil)
         // A reminder that silently never shows is worse than none: say why in the activity list.
         Task { @MainActor [weak self] in

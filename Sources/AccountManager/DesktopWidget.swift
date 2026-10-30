@@ -83,8 +83,8 @@ struct DesktopWidgetView: View {
             HStack(spacing: 10) {
                 ZStack(alignment: .leading) {
                     DragSurface()
-                    Text("Tibot").font(.system(size: 13, weight: .semibold)).allowsHitTesting(false)
-                }.frame(maxWidth: .infinity).frame(height: 24)
+                    MascotHeader(store: store)
+                }.frame(maxWidth: .infinity).frame(height: 28)
                 Button { present(.add) } label: { Image(systemName: "plus").frame(width: 22, height: 24).contentShape(Rectangle()) }
                     .help("添加账号").accessibilityLabel("添加新的Codex账号")
                 Button { store.refreshAll() } label: { Image(systemName: "arrow.clockwise") }
@@ -95,11 +95,6 @@ struct DesktopWidgetView: View {
                     .help("设置").accessibilityLabel("打开设置")
             }.buttonStyle(.plain).font(.system(size: 13))
             if store.gatewayEnabled { RoutingActivityView(store: store) } else if !store.preview { RoutingSetupView(store: store) }
-            if let alert = store.resetAlert {
-                Link(destination: alert.url) {
-                    Label(alert.text, systemImage: "bolt.fill").font(.system(size: 11, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
-                }.foregroundStyle(Color(red: 0.85, green: 0.38, blue: 0.05)).help("打开 Tibo 原帖")
-            }
             if let banner = store.banner {
                 HStack(alignment: .top) {
                     Text(banner).font(.caption).fixedSize(horizontal: false, vertical: true)
@@ -116,7 +111,7 @@ struct DesktopWidgetView: View {
             }.scrollIndicators(.hidden)
                 .overlay {
                     if store.saved.accounts.isEmpty {
-                        Button("＋ 添加第一个账号") { present(.add) }.buttonStyle(.plain)
+                        DangoWelcome { present(.add) }
                     }
                 }
             TokenActivityMini(store: store) { present(.activity) }
@@ -239,5 +234,45 @@ struct DesktopWidgetView: View {
         }
         Button("移除账号…", role: .destructive) { present(.remove(slot)) }
             .disabled(store.loginSlotID != nil || store.status[slot.id] == .checking || !store.canConnect)
+    }
+}
+
+/// The panel's top line: the mascot, and what it has to say about routing right now. Tibo's reset reminder is
+/// said here too, and opens the post.
+private struct MascotHeader: View {
+    @ObservedObject var store: AppStore
+    @State private var switched: Mascot.Switch?
+    var body: some View {
+        let line = store.mascotLine(switched: switched)
+        HStack(spacing: 8) {
+            LiveDango(mood: line.mood, busy: !store.routingActivity.active.isEmpty).frame(width: 24, height: 24)
+                .allowsHitTesting(false)
+            bubble(line)
+        }
+        // A switch is news for a few seconds, then the usual line comes back.
+        .onChange(of: store.currentAccountID) { old, new in
+            guard store.gatewayEnabled, let old, let new, old != new else { return }
+            let move = Mascot.Switch(from: old, to: new)
+            switched = move
+            Task { try? await Task.sleep(for: .seconds(6)); if switched == move { switched = nil } }
+        }
+    }
+    @ViewBuilder private func bubble(_ line: Mascot.Line) -> some View {
+        let alert = line.mood == .star ? store.resetAlert : nil
+        let fill = alert == nil ? Color(white: 0.9) : Color(red: 1, green: 0.92, blue: 0.83)
+        let text = Text(line.text).font(.system(size: 11, weight: .medium)).lineLimit(1).minimumScaleFactor(0.85)
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(fill, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(alignment: .leading) { BubbleTail().fill(fill).frame(width: 5, height: 8).offset(x: -4) }
+        if let alert {
+            Link(destination: alert.url) { text.foregroundStyle(Color(red: 0.75, green: 0.32, blue: 0.02)) }.help("打开 Tibo 原帖")
+        } else {
+            text.allowsHitTesting(false)
+        }
+    }
+}
+private struct BubbleTail: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in p.move(to: CGPoint(x: rect.maxX, y: rect.minY)); p.addLine(to: CGPoint(x: rect.minX, y: rect.midY)); p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY)) }
     }
 }
