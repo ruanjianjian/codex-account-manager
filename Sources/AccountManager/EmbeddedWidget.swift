@@ -50,7 +50,7 @@ struct EmbeddedWidgetView: View {
         }
         .padding(16).frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(Color(white: 0.12))
-        // The mascot squints (> <) for the length of a hop.
+        // The mascot grows legs for the length of a hop.
         .onChange(of: tileID) { _, _ in
             guard !reduceMotion else { return }
             hopping = true
@@ -100,7 +100,7 @@ struct EmbeddedWidgetView: View {
     private func remaining(_ slot: AccountSlot) -> Double? { slot.snapshot?.rates.windows.compactMap(\.remaining).min() }
     private func usable(_ slot: AccountSlot) -> Bool { (remaining(slot) ?? 0) > 0 }
     private var activeID: String? { store.currentAccountID }
-    /// Every account is out: the mascot sleeps on the one that comes back first.
+    /// Every account is out: the mascot waits, dead-eyed, on the one that comes back first.
     private var spentUntil: Mascot.Account? {
         let accounts = store.mascotAccounts
         return Mascot.allSpent(accounts) ? Mascot.nextBack(accounts) : nil
@@ -108,7 +108,8 @@ struct EmbeddedWidgetView: View {
     private var tileID: String? { activeID ?? spentUntil?.id }
     private var tileMood: MascotMood {
         if hopping { return .hop }
-        if spentUntil != nil { return .sleep }
+        if spentUntil != nil { return .sad }
+        if store.gatewayEnabled && !store.gatewayReady { return .puzzled }
         return store.resetAlert == nil ? .open : .star
     }
 

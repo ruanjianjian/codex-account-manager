@@ -2,82 +2,87 @@ import AppKit
 import SwiftUI
 import AccountCore
 
-/// 「终端团子」: the dark >_ tile grown soft, with eyes, blush and the "_" as a mint smile.
+/// Tibot's mascot: a small black tile peeking over a gray stone, as on the app icon. Its other moods are the other
+/// sketches: a >_ wink to say hello, thin legs and big shoes for a hop, one buck tooth for good news, dead-fish
+/// eyes when every account is out, odd eyes while the gateway is not up.
 struct Dango: View {
     let mood: MascotMood
-    private static let body = Color(white: 0.11)
-    private static let green = Color(red: 0.19, green: 0.82, blue: 0.35)
+    /// How far the peeking mascot rises over its stone, 0...1.
+    var lift: CGFloat = 0
+    private static let ink = Color(white: 0.067)
+    private static let gray = Color(red: 0.557, green: 0.557, blue: 0.576)
+    private static let lightGray = Color(red: 0.682, green: 0.682, blue: 0.698)
     var body: some View {
-        Canvas { context, size in Self.draw(&context, s: min(size.width, size.height), mood: mood) }
-            .rotationEffect(.degrees(mood == .hello ? -8 : 0))
+        Canvas { context, size in Self.draw(context, s: min(size.width, size.height), mood: mood, lift: lift) }
             .accessibilityHidden(true)
     }
 
-    private static func draw(_ context: inout GraphicsContext, s: CGFloat, mood: MascotMood) {
-        let ey = s * 0.42, er = s * 0.105, line = max(1.2, s * 0.05)
-        context.fill(Path(roundedRect: CGRect(x: 0, y: 0, width: s, height: s), cornerRadius: s * 0.3), with: .color(body))
-        for side in [-1.0, 1.0] {
-            let cx = s / 2 + side * s * 0.2
-            switch mood {
-            case .open, .hello:
-                context.fill(Path(ellipseIn: CGRect(x: cx - er, y: ey - er * 1.15, width: er * 2, height: er * 2.3)), with: .color(.white))
-                let pr = er * 0.55
-                context.fill(Path(ellipseIn: CGRect(x: cx + s * 0.02 - pr, y: ey + s * 0.012 - pr, width: pr * 2, height: pr * 2)), with: .color(body))
-            case .blink, .sleep:
-                let y = mood == .sleep ? ey + s * 0.03 : ey
-                context.fill(Path(roundedRect: CGRect(x: cx - er * 0.85, y: y - line / 2, width: er * 1.7, height: line), cornerRadius: line / 2), with: .color(.white))
-            case .hop:
-                var chevron = Path()
-                chevron.move(to: CGPoint(x: cx + side * er, y: ey - er * 0.8))
-                chevron.addLine(to: CGPoint(x: cx - side * er * 0.6, y: ey))
-                chevron.addLine(to: CGPoint(x: cx + side * er, y: ey + er * 0.8))
-                context.stroke(chevron, with: .color(.white), style: StrokeStyle(lineWidth: line, lineCap: .round, lineJoin: .round))
-            case .star:
-                // A four-point sparkle for each eye.
-                let r = s * 0.13, w = s * 0.034
-                var star = Path()
-                star.move(to: CGPoint(x: cx, y: ey - r))
-                for (dx, dy) in [(w, -w), (r, 0), (w, w), (0, r), (-w, w), (-r, 0), (-w, -w)] as [(CGFloat, CGFloat)] {
-                    star.addLine(to: CGPoint(x: cx + dx, y: ey + dy))
-                }
-                star.closeSubpath()
-                context.fill(star, with: .color(Color(red: 1, green: 0.84, blue: 0.04)))
-            case .sad:
-                // Round eyes looking down, with drooping lids.
-                context.fill(Path(ellipseIn: CGRect(x: cx - er * 0.95, y: ey + s * 0.02 - er * 0.95, width: er * 1.9, height: er * 1.9)), with: .color(.white))
-                let pr = er * 0.5
-                context.fill(Path(ellipseIn: CGRect(x: cx - pr, y: ey + s * 0.05 - pr, width: pr * 2, height: pr * 2)), with: .color(body))
-                var lid = context
-                lid.translateBy(x: cx, y: ey - s * 0.04); lid.rotate(by: .degrees(side * 12))
-                lid.fill(Path(CGRect(x: -s * 0.12, y: -s * 0.1, width: s * 0.24, height: s * 0.1)), with: .color(body))
-            }
-            if mood != .sad {
-                let blush = CGRect(x: s / 2 + side * s * 0.33 - s * 0.085, y: s * 0.64 - s * 0.048, width: s * 0.17, height: s * 0.096)
-                context.fill(Path(ellipseIn: blush), with: .color(Color(red: 1, green: 0.5, blue: 0.59).opacity(0.6)))
-            }
+    /// Every mood is drawn in its sketch's 160-unit square; the crop is the part of it that fills the view.
+    private static func draw(_ context: GraphicsContext, s: CGFloat, mood: MascotMood, lift: CGFloat) {
+        var c = context
+        let crop: (x: CGFloat, y: CGFloat, w: CGFloat) = switch mood {
+        case .open, .blink: (20, 32, 120)
+        case .sad: (32, 32, 96)
+        case .puzzled: (29, 29, 102)
+        case .hello: (26, 26, 108)
+        case .hop: (26, 24, 108)
+        case .star: (34, 30, 92)
+        }
+        c.scaleBy(x: s / crop.w, y: s / crop.w)
+        c.translateBy(x: -crop.x, y: -crop.y)
+        func tile(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ corner: CGFloat) {
+            c.fill(Path(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerRadius: corner), with: .color(ink))
+        }
+        func oval(_ x: CGFloat, _ y: CGFloat, _ rx: CGFloat, _ ry: CGFloat, _ color: Color) {
+            c.fill(Path(ellipseIn: CGRect(x: x - rx, y: y - ry, width: 2 * rx, height: 2 * ry)), with: .color(color))
+        }
+        func line(_ points: [CGPoint], _ width: CGFloat, _ color: Color) {
+            var path = Path(); path.addLines(points)
+            c.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
         }
         switch mood {
-        case .star, .hello:
-            var smile = Path()
-            smile.move(to: CGPoint(x: s * 0.41, y: s * 0.66))
-            smile.addQuadCurve(to: CGPoint(x: s * 0.59, y: s * 0.66), control: CGPoint(x: s * 0.5, y: s * 0.8))
-            smile.closeSubpath()
-            context.fill(smile, with: .color(green))
+        case .open, .blink:
+            // Hands on the stone; the head rises over it.
+            let y = -8 * lift
+            tile(40, 40 + y, 80, 80, 26)
+            for x in [66.0, 94] as [CGFloat] {
+                if mood == .blink {
+                    line([CGPoint(x: x - 7, y: 69 + y), CGPoint(x: x + 7, y: 69 + y)], 3.5, .white)
+                } else {
+                    oval(x, 68 + y, 8.5, 8.5, .white); oval(x + 4, 69 + y, 3.6, 3.6, ink)
+                }
+            }
+            oval(80, 116, 60, 28, gray); oval(80, 103, 52, 14, lightGray)
+            oval(52, 92, 8, 6, ink); oval(108, 92, 8, 6, ink)
         case .sad:
-            var frown = Path()
-            frown.move(to: CGPoint(x: s * 0.42, y: s * 0.72))
-            frown.addQuadCurve(to: CGPoint(x: s * 0.58, y: s * 0.72), control: CGPoint(x: s * 0.5, y: s * 0.64))
-            context.stroke(frown, with: .color(Color(white: 0.56)), style: StrokeStyle(lineWidth: line * 0.8, lineCap: .round))
-        default:
-            let mouth = CGRect(x: s / 2 - s * 0.09, y: s * 0.68, width: s * 0.18, height: max(1.5, s * 0.05))
-            context.fill(Path(roundedRect: mouth, cornerRadius: mouth.height / 2), with: .color(green))
-        }
-        if mood == .sleep {
-            var z = Path()
-            let x = s * 0.7, y = s * 0.1, d = s * 0.11
-            z.move(to: CGPoint(x: x, y: y)); z.addLine(to: CGPoint(x: x + d, y: y))
-            z.addLine(to: CGPoint(x: x, y: y + d)); z.addLine(to: CGPoint(x: x + d, y: y + d))
-            context.stroke(z, with: .color(.white.opacity(0.7)), style: StrokeStyle(lineWidth: line * 0.7, lineCap: .round, lineJoin: .round))
+            tile(32, 32, 96, 96, 30)
+            oval(62, 74, 14, 14, .white); oval(98, 74, 14, 14, .white)
+            c.fill(Path(CGRect(x: 44, y: 56, width: 72, height: 18)), with: .color(ink))
+            oval(62, 81, 5, 5, ink); oval(98, 81, 5, 5, ink)
+            line([CGPoint(x: 72, y: 106), CGPoint(x: 90, y: 104)], 4, .white)
+        case .puzzled:
+            c.translateBy(x: 80, y: 80); c.rotate(by: .degrees(-6)); c.translateBy(x: -80, y: -80)
+            tile(34, 34, 92, 92, 28)
+            oval(64, 74, 17, 17, .white); oval(70, 77, 6.5, 6.5, ink)
+            oval(101, 66, 4.5, 4.5, .white)
+            line([CGPoint(x: 76, y: 106), CGPoint(x: 96, y: 106)], 4, gray)
+        case .hello:
+            tile(26, 26, 108, 108, 34)
+            line([CGPoint(x: 44, y: 58), CGPoint(x: 64, y: 72), CGPoint(x: 44, y: 86)], 9, .white)
+            oval(104, 72, 9, 9, .white)
+            c.fill(Path(roundedRect: CGRect(x: 66, y: 104, width: 34, height: 9), cornerRadius: 4.5), with: .color(gray))
+        case .hop:
+            tile(64, 86, 4, 32, 2); tile(92, 86, 4, 32, 2)
+            oval(59, 124, 18, 8, gray); oval(101, 124, 18, 8, gray)
+            tile(46, 24, 68, 66, 22)
+            oval(68, 54, 6, 6, .white); oval(92, 54, 6, 6, .white)
+            line([CGPoint(x: 74, y: 72), CGPoint(x: 86, y: 72)], 3.5, .white)
+        case .star:
+            tile(34, 30, 92, 92, 28)
+            oval(64, 66, 7, 7, .white); oval(96, 66, 7, 7, .white)
+            line([CGPoint(x: 62, y: 94), CGPoint(x: 98, y: 94)], 4, .white)
+            let tooth = CGAffineTransform(translationX: 80, y: 103).rotated(by: .pi / 30).translatedBy(x: -80, y: -103)
+            c.fill(Path(roundedRect: CGRect(x: 73, y: 93, width: 14, height: 20), cornerRadius: 3).applying(tooth), with: .color(.white))
         }
     }
 
@@ -90,8 +95,8 @@ struct Dango: View {
     }
 }
 
-/// The mascot alive: it blinks every few seconds while its eyes are open and bobs while a request is running.
-/// Otherwise nothing redraws.
+/// The mascot alive: it blinks every few seconds while it peeks, and bobs while a request is running (peeking, only
+/// its head rises over the stone). Otherwise nothing redraws.
 struct LiveDango: View {
     let mood: MascotMood
     var busy = false
@@ -99,10 +104,10 @@ struct LiveDango: View {
     @State private var blinking = false
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !busy || reduceMotion)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
+            let bob = busy && !reduceMotion ? abs(sin(timeline.date.timeIntervalSinceReferenceDate * 7)) : 0
             GeometryReader { proxy in
-                Dango(mood: mood == .open && blinking ? .blink : mood)
-                    .offset(y: busy && !reduceMotion ? -abs(sin(t * 7)) * proxy.size.height * 0.1 : 0)
+                Dango(mood: mood == .open && blinking ? .blink : mood, lift: mood == .open ? bob : 0)
+                    .offset(y: mood == .open ? 0 : -bob * proxy.size.height * 0.1)
             }
         }
         .task(id: reduceMotion || mood != .open) {
@@ -117,7 +122,7 @@ struct LiveDango: View {
     }
 }
 
-/// First run: the mascot waves and asks for the first account.
+/// First run: the mascot winks and asks for the first account.
 struct DangoWelcome: View {
     let add: () -> Void
     var body: some View {
