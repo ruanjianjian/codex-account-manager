@@ -35,6 +35,25 @@ public enum TokenActivity {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         return (0..<max(0, count)).reversed().compactMap { calendar.date(byAdding: .day, value: -$0, to: now) }.map(dateKey)
     }
+    /// Every day back to the earliest one any account returned, in whole weeks ending today, oldest first; the last
+    /// week is the last 7 days.
+    public static func weeks(_ responses: [TokenUsageResponse?], now: Date = Date()) -> [[TokenDay]] {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let parser = DateFormatter(); parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.timeZone = calendar.timeZone; parser.dateFormat = "yyyy-MM-dd"
+        let earliest = responses.compactMap { $0?.dailyUsageBuckets?.compactMap { parser.date(from: $0.startDate) }.min() }.min()
+        let span = earliest.flatMap { calendar.dateComponents([.day], from: $0, to: calendar.startOfDay(for: now)).day } ?? 0
+        let days = aggregate(responses, dates: recentDates(count: max(1, (span + 7) / 7) * 7, now: now))
+        return stride(from: 0, to: days.count, by: 7).map { Array(days[$0 ..< $0 + 7]) }
+    }
+    /// "近 7 天", "上周", then the week's dates ("10-10 – 10-16").
+    public static func weekTitle(_ week: [TokenDay], weeksAgo: Int) -> String {
+        switch weeksAgo {
+        case 0: return "近 7 天"
+        case 1: return "上周"
+        default: return "\(week.first?.id.suffix(5) ?? "") – \(week.last?.id.suffix(5) ?? "")"
+        }
+    }
     // A missing bucket is unknown, never an invented zero. Duplicate dates in a
     // single account response count once; repeated refreshes replace snapshots.
     public static func aggregate(_ responses: [TokenUsageResponse?], dates: [String]) -> [TokenDay] {

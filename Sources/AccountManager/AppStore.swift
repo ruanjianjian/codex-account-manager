@@ -456,6 +456,7 @@ enum SlotStatus: Equatable {
         else { dates = Set(accounts.flatMap { $0.tokenUsage?.response.dailyUsageBuckets?.map(\.startDate) ?? [] }).sorted() }
         return TokenActivity.aggregate(accounts.map { $0.tokenUsage?.response }, dates: dates)
     }
+    func tokenWeeks() -> [[TokenDay]] { TokenActivity.weeks(saved.accounts.map { $0.tokenUsage?.response }, now: now) }
     func usageCaption(accountID: String? = nil) -> String {
         let accounts = saved.accounts.filter { accountID == nil || $0.id == accountID }
         let available = accounts.filter { $0.tokenUsage?.response.dailyUsageBuckets != nil }.count
