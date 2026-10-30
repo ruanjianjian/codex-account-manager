@@ -266,7 +266,7 @@ enum SlotStatus: Equatable {
                   let credential = try? GatewayCredentialSource.select(expected: expected, desktop: desktopData, stored: { try Data(contentsOf: auth) }) else { continue }
             let windows = slot.snapshot?.rates.windows ?? []
             let spent = windows.contains { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
-            if let value = try? GatewayAccount(id: slot.id, credential: credential, available: !spent, reset: windows.compactMap(\.resetsAt).min() ?? 0) { accounts.append(value) }
+            if let value = try? GatewayAccount(id: slot.id, credential: credential, available: !spent, reset: windows.quotaReset ?? 0) { accounts.append(value) }
         }
         try gateway.save(accounts: accounts, preferred: gatewayPreferred, clients: identities)
     }
@@ -858,12 +858,14 @@ enum SlotStatus: Equatable {
             setGatewayEnabled(true)
             guard gatewayEnabled else { return }
         }
+        // Clicking the account that is already preferred hands new conversations back to automatic routing.
+        if gatewayPreferred == id { selectGatewayAccount(""); gatewayCaption = "新会话改回自动：先用最早重置的账号"; return }
         selectGatewayAccount(id)
         gatewayCaption = "新会话优先使用 \(selected.displayName)"
     }
     func accountActionLabel(_ id: String) -> String {
         guard gatewayEnabled else { return "开启自动路由并设为新会话优先…" }
-        return gatewayPreferred == id ? "新会话优先使用此账号" : "设为新会话优先"
+        return gatewayPreferred == id ? "改回自动（先用最早重置的账号）" : "设为新会话优先"
     }
     private func openChrome(for id: String, url: URL) throws {
         guard let slot = slot(id) else { return }
