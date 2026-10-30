@@ -22,6 +22,33 @@ final class ResetAnnouncementTests: XCTestCase {
         XCTAssertTrue(try restored.ingest(feed([planned, completed, old]), accountIDs: ["a", "b"], now: start.addingTimeInterval(40)).isEmpty)
         XCTAssertEqual(restored.pendingAccountIDs, ["a", "b"])
     }
+    // Day 25 (2026-10-29): limits doubled "effective today". No "reset" in it, yet it refills quota like one.
+    func testLimitChangesThatApplyNowNotifyOnceAcrossSources() throws {
+        let day25 = "Day 25/\n\nWe are doubling all usage limits for all Pro 100/200/500 tiers and Business Premium, effective today.\n\nWe heard your kind feedback and won't be reducing usage limits for Pro 200, so your Work and Codex usage will stay the same."
+        XCTAssertTrue(LimitsAnnouncement.matches(day25))
+        for text in ["Day 22/ Terra is back! Very good at computer use, and gives 2X more usage than 6.1 Sol",
+                     "We are not doubling limits today.", "Should we double usage limits today?", "Usage limits are the same as before."] {
+            XCTAssertFalse(LimitsAnnouncement.matches(text), text)
+        }
+        XCTAssertEqual(LimitsAnnouncement.headline(day25), "We are doubling all usage limits for all Pro 100/200/500 tiers and Business Premium, effective today.")
+        let at = ISO8601DateFormatter().string(from: start.addingTimeInterval(10))
+        let make = { (id: String, text: String, kind: String) in
+            ResetAnnouncement(id: id, text: text, published_at: at, url: "https://x.com/thsottiaux/status/\(id)", kind: kind)
+        }
+        let limits = make("2115850175868727621", day25, "limits")
+        XCTAssertEqual(ResetNotice.message(for: limits, accounts: [], now: start)?.title, "Tibo 宣布额度调整")
+        // The public source also files model launches under "limits"; those are not limit changes.
+        let launch = make("2115000000000000009", "Terra is back! It gives 2X more usage than 6.1 Sol", "limits")
+        XCTAssertFalse(launch.eligible)
+        var state = ResetMonitorState(now: start)
+        XCTAssertEqual(try state.ingest(feed([limits, launch]), accountIDs: ["a"], now: start.addingTimeInterval(30)).count, 1)
+        // The other source classifying the same post differently does not signal it again...
+        XCTAssertTrue(try state.ingest(feed([make(limits.id, day25, "reported_completed")]), accountIDs: ["a"], now: start.addingTimeInterval(40)).isEmpty)
+        // ...but a post first seen only as a possible reset may still be confirmed.
+        let hint = make("2115000000000000010", "Day 20/ Rest and reset", "possible_reset")
+        XCTAssertEqual(try state.ingest(feed([hint]), accountIDs: ["a"], now: start.addingTimeInterval(50)).count, 1)
+        XCTAssertEqual(try state.ingest(feed([make(hint.id, hint.text, "reported_completed")]), accountIDs: ["a"], now: start.addingTimeInterval(60)).count, 1)
+    }
     func testBankedSignalQueriesWithoutConsumingAndRejectsUntrustedLinks() throws {
         var state = ResetMonitorState(now: start)
         let banked = post(kind: "banked")

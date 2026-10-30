@@ -22,9 +22,13 @@ public struct ResetAnnouncement: Codable, Equatable {
         guard kind == "planned", let date, let timing else { return false }
         return (timing.expectedAt ?? date.addingTimeInterval(24 * 3600)) > now
     }
-    public var eligible: Bool { ["planned", "reported_completed", "banked", "possible_reset"].contains(kind) && originalURL != nil && date != nil }
+    public var eligible: Bool {
+        ["planned", "reported_completed", "banked", "possible_reset", "limits"].contains(kind) && originalURL != nil && date != nil
+            && (kind != "limits" || LimitsAnnouncement.matches(text))
+    }
     public var label: String {
         if kind == "possible_reset" { return "重置相关新帖（待额度核验）" }
+        if kind == "limits" { return "额度调整公告" }
         return kind == "banked" ? "banked reset 发放公告" : (kind == "planned" ? "重置预告" : "重置完成公告")
     }
 }
@@ -72,11 +76,18 @@ public struct ResetMonitorState: Codable {
         lastError = nil
         guard enabled else { return [] }
         let seen = Set(seenKeys)
+        // Personal X and the public source classify the same post separately; one post signals once,
+        // unless it was only a "possible reset" before.
+        var seenIDs = Set(seenKeys.compactMap { key -> String? in
+            let parts = key.split(separator: ":", maxSplits: 1)
+            return parts.count == 2 && parts[1] != "possible_reset" ? String(parts[0]) : nil
+        })
         var newKeys = Set<String>()
         let signals = feed.items.filter { post in
             guard post.eligible, let date = post.date, date >= startedAt,
                   date <= now.addingTimeInterval(300), date >= now.addingTimeInterval(-72 * 3600),
-                  !seen.contains(post.key), newKeys.insert(post.key).inserted else { return false }
+                  !seen.contains(post.key), !seenIDs.contains(post.id), newKeys.insert(post.key).inserted else { return false }
+            if post.kind != "possible_reset" { seenIDs.insert(post.id) }
             return true
         }.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
         seenKeys = Array((seenKeys + signals.map(\.key)).suffix(1000))
@@ -94,6 +105,28 @@ public struct ResetMonitorState: Codable {
     }
     public func canRetry(at now: Date) -> Bool {
         enabled && !pendingAccountIDs.isEmpty && requestedAt.map { now.timeIntervalSince($0) <= 900 } == true
+    }
+}
+
+/// "We are doubling all usage limits ... effective today": a limit change that applies now refills quota like a
+/// reset does. Model launches that merely give "2X more usage" are not limit changes.
+public enum LimitsAnnouncement {
+    public static func matches(_ text: String) -> Bool {
+        let value = text.lowercased().replacingOccurrences(of: "’", with: "'")
+        func has(_ expression: String) -> Bool { value.range(of: expression, options: .regularExpression) != nil }
+        return has(#"\b(usage|rate) limits?\b|\blimits\b"#)
+            && has(#"\b(doubl\w*|tripl\w*|2x|3x|increas\w*|rais\w*|boost\w*|bump\w*)\b"#)
+            && has(#"\b(today|now|effective|starting|immediately)\b"#)
+            && !has(#"\b(not|no|never|won't|aren't|isn't)\b.{0,25}\b(doubl|tripl|increas|rais|boost|bump)"#)
+            && !value.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
+    }
+    /// The post's first sentence without the "Day 25/" campaign prefix, for a notification body.
+    public static func headline(_ text: String) -> String {
+        var line = text.replacingOccurrences(of: #"^\s*day\s+\d+\s*[/.:]\s*"#, with: "", options: [.regularExpression, .caseInsensitive])
+        line = line.split(whereSeparator: \.isNewline).first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(String.init) ?? line
+        if let end = line.range(of: #"[.!。！](\s|$)"#, options: .regularExpression) { line = String(line[..<end.upperBound]) }
+        line = line.trimmingCharacters(in: .whitespaces)
+        return line.count > 120 ? String(line.prefix(117)) + "…" : line
     }
 }
 
@@ -162,6 +195,7 @@ public enum ResetNotice {
             let usage = left.isEmpty ? "各账号余量已不多。" : "还有余量：" + left.map { "\($0.name) \(Int($0.remaining))%" }.joined(separator: "、") + "，抓紧用。"
             return ("Tibo 预告重置额度", (post.timing?.describe(now: now) ?? "重置时间未说明") + "。" + usage)
         case "reported_completed": return ("Tibo 宣布额度已重置", "正在刷新全部账号额度。")
+        case "limits": return ("Tibo 宣布额度调整", LimitsAnnouncement.headline(post.text) + " 正在刷新全部账号额度。")
         case "banked": return ("Tibo 发放 banked reset", "正在刷新各账号的 banked reset。")
         default: return nil
         }
