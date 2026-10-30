@@ -17,6 +17,13 @@ public struct QuotaWindow: Codable, Equatable {
         self.usedPercent = usedPercent; self.windowDurationMins = windowDurationMins; self.resetsAt = resetsAt
     }
 }
+extension Array where Element == QuotaWindow {
+    /// When an account's unused quota is lost: the reset of its longest window (weekly on most plans).
+    /// Automatic routing starts new conversations on the account whose quota resets first.
+    public var quotaReset: Double? {
+        filter { $0.resetsAt != nil }.max { ($0.windowDurationMins ?? 0) < ($1.windowDurationMins ?? 0) }?.resetsAt
+    }
+}
 public struct QuotaBucket: Codable, Equatable {
     public var limitId: String?
     public var limitName: String?

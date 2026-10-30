@@ -10,7 +10,7 @@
 
 A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 工具：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
-**测试版 v0.4.14-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+**测试版 v0.4.15-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
 
 ## 一行安装
 
@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 1. 第一次打开时，看板顶部的「自动路由」卡片列出两步：**改用本机文件存储**、**连接 Codex 桌面正在登录的账号**（直接读取这个登录，不用再去浏览器登录一次）。
 2. 两步完成后路由自动开启：保存原 Codex 配置，保留官方 provider 和 Fast 设置，只把推理地址指向本机网关。在设置里关掉后，不会再自动开启。
 3. 新会话立刻经过网关；已经打开的会话重启 Codex 后也会经过网关。之后请求由网关选择账号，无需为每个请求切换桌面登录。
-4. 会话始终留在第一次承接它的账号上，以复用该账号的 prompt cache；该账号不可用时才换。新会话优先选择较快重置的可用账号，也可在设置「新会话优先」或点击卡片的账号名称指定；改指定不会把进行中的会话挪走。仅输出开始前的可重试失败会尝试备用账号。
+4. 会话始终留在第一次承接它的账号上，以复用该账号的 prompt cache；该账号不可用时才换。新会话默认先用**最早重置**的可用账号（按每周额度的重置时间），快过期的额度先用掉，用完再换下一个；也可在设置「新会话优先」或点击账号名称指定某个账号，再点一次改回自动。改指定不会把进行中的会话挪走。仅输出开始前的可重试失败会尝试备用账号。
 5. 关闭开关会恢复原 provider，保留期间对其他设置的修改；如网关配置项本身被其他程序改动，会拒绝覆盖并保留备份。关闭后同样重启 Codex。v0.3.0 创建的自定义 provider 会话仍需网关开启才能继续。
 
 **使用期间保持 Tibot 运行。** 私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
@@ -78,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 ## 手动安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.14-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.15-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 App 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。装了 Codex 桌面（ChatGPT App）就自带 CLI，本版用其内置 CLI 0.165 验证；旧版 CLI 可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。

@@ -512,3 +512,21 @@ func TestSystemProxyFollowsMacSettings(t *testing.T) {
 		t.Fatal("loopback sent through the proxy", u)
 	}
 }
+
+// Automatic routing spends the quota that resets first; a chosen account and a running conversation still come first.
+func TestNewConversationsUseTheEarliestReset(t *testing.T) {
+	c := pool()
+	c.Accounts[0].Reset, c.Accounts[1].Reset = 900, 300
+	g := newGateway(func() (config, error) { return c, nil }, "", func(event) {})
+	if xs, _ := g.candidates(c, "fresh", false, ""); xs[0].ID != "two" {
+		t.Fatal("new conversation skipped the earliest reset", xs)
+	}
+	c.Accounts[1].Reset = 0
+	if xs, _ := g.candidates(c, "fresh", false, ""); xs[0].ID != "one" {
+		t.Fatal("unknown reset ranked before a known one", xs)
+	}
+	c.Accounts[1].Reset, c.Preferred = 300, "one"
+	if xs, _ := g.candidates(c, "fresh", false, ""); xs[0].ID != "one" {
+		t.Fatal("chosen account ignored", xs)
+	}
+}

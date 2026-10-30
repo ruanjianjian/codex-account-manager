@@ -49,7 +49,7 @@ struct RoutingActivityView: View {
                     }.frame(height: flowHeight).scrollIndicators(.hidden)
                 }
                 HStack(spacing: 6) {
-                    Text(store.gatewayPreferred.isEmpty ? "自动选路" : "优先指定账号")
+                    Text(store.gatewayPreferred.isEmpty ? "最早重置优先" : "优先指定账号")
                     Spacer(minLength: 0)
                     Text("\(activity.completed) 完成 · \(activity.reroutes) 换路")
                         .monospacedDigit().help("本次启动后的请求统计；换路只在真正尝试下一个账号时计数")

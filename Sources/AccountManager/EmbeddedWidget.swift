@@ -71,7 +71,7 @@ struct EmbeddedWidgetView: View {
         guard store.gatewayReady else { return "等待网关" }
         let busy = store.routingActivity.active.count
         if busy > 0 { return "\(busy) 个请求中" }
-        return store.gatewayPreferred.isEmpty ? "自动选路" : "优先 " + (store.slot(store.gatewayPreferred)?.displayName ?? "指定账号")
+        return store.gatewayPreferred.isEmpty ? "最早重置优先" : "优先 " + (store.slot(store.gatewayPreferred)?.displayName ?? "指定账号")
     }
     @ViewBuilder private var footer: some View {
         if let alert = store.resetAlert {
@@ -97,7 +97,9 @@ struct EmbeddedWidgetView: View {
         }
         if let id = store.gatewayAccount ?? store.routingActivity.lastAccount, let slot = store.slot(id), usable(slot) { return id }
         if let slot = store.slot(store.gatewayPreferred), usable(slot) { return slot.id }
-        return accounts.filter(usable).max { (remaining($0) ?? 0) < (remaining($1) ?? 0) }?.id
+        // Automatic routing: the account whose quota resets first, like the gateway picks.
+        let reset = { (slot: AccountSlot) in slot.snapshot?.rates.windows.quotaReset ?? .infinity }
+        return accounts.filter(usable).min { reset($0) < reset($1) }?.id
     }
 
     private func stone(_ slot: AccountSlot) -> some View {

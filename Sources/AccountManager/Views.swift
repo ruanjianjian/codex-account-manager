@@ -212,7 +212,7 @@ struct GeneralSettings: View {
                     Text("新会话优先").font(.system(size: 12))
                     Spacer()
                     Picker("新会话优先", selection: Binding(get: { store.gatewayPreferred }, set: store.selectGatewayAccount)) {
-                        Text("自动选择").tag("")
+                        Text("自动：先用最早重置的").tag("")
                         ForEach(store.saved.accounts) { Text($0.displayName).tag($0.id) }
                     }.pickerStyle(.menu).labelsHidden().fixedSize()
                 }.padding(.vertical, 6)

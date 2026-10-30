@@ -44,3 +44,13 @@ final class ResetJudgeTests: XCTestCase {
         XCTAssertEqual(judged.items.first?.kind, "none"); XCTAssertFalse(judged.items.first!.eligible)
     }
 }
+
+final class QuotaResetTests: XCTestCase {
+    // The weekly window decides, not the 5-hour one that resets all the time.
+    func testQuotaResetIsTheLongestWindowsReset() {
+        let windows = [QuotaWindow(usedPercent: 10, windowDurationMins: 300, resetsAt: 1_000), QuotaWindow(usedPercent: 40, windowDurationMins: 10_080, resetsAt: 500_000)]
+        XCTAssertEqual(windows.quotaReset, 500_000)
+        XCTAssertEqual([QuotaWindow(usedPercent: 10, windowDurationMins: 300, resetsAt: 1_000)].quotaReset, 1_000)
+        XCTAssertNil([QuotaWindow(usedPercent: 10)].quotaReset)
+    }
+}
