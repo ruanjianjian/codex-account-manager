@@ -103,28 +103,49 @@ struct EmbeddedWidgetView: View {
     private func stone(_ slot: AccountSlot) -> some View {
         let left = remaining(slot)
         let reset = slot.snapshot?.rates.windows.compactMap(\.resetDate).min()
-        let active = slot.id == activeID, spent = left.map { $0 <= 0 } ?? false
+        let active = slot.id == activeID
+        let spent = left.map { $0 <= 0 } ?? false
+        let spoken = spokenLabel(slot, left: left, reset: reset, active: active, spent: spent)
         return VStack(spacing: 6) {
-            Color.clear.frame(height: 30)
-                .anchorPreference(key: TileSpot.self, value: .bounds) { active ? $0 : nil }
-            Capsule().fill(left == nil ? Color.clear : active ? green : Color(white: spent ? 0.9 : 0.8)).frame(height: 8)
-                .overlay { if left == nil { Capsule().strokeBorder(Color(white: 0.75), style: StrokeStyle(lineWidth: 1, dash: [3, 3])) } }
-            Button { store.chooseAccount(slot.id) } label: {
-                Text(slot.displayName).font(.system(size: 12, weight: active ? .semibold : .regular)).lineLimit(1).minimumScaleFactor(0.75)
-                    .foregroundStyle(active ? Color(white: 0.12) : spent ? Color(white: 0.6) : Color(white: 0.35))
-            }.buttonStyle(.plain).disabled(store.preview || slot.expectedAccountID == nil).help(store.accountActionLabel(slot.id))
-            if let left {
-                Text(spent ? Self.untilReset(reset, now: store.now) : "\(Int(left))%")
-                    .font(.system(size: 11, weight: active ? .semibold : .regular)).monospacedDigit().lineLimit(1)
-                    .foregroundStyle(active ? green : spent ? Color(white: 0.6) : left < 15 ? orange : Color(white: 0.45))
-                    .allowsHitTesting(false)
-            } else {
-                Button("＋ 连接") { store.connectOrContinue(slot.id) }.buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .medium)).disabled(!store.canOpenConnection(slot.id))
-            }
+            spot(active)
+            bar(left: left, active: active, spent: spent)
+            name(slot, active: active, spent: spent)
+            value(slot, left: left, reset: reset, active: active, spent: spent)
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(slot.displayName + (active ? "，正在用" : "") + (left.map { spent ? "，额度用完，" + Self.untilReset(reset, now: store.now) + "恢复" : "，余量 \(Int($0))%" } ?? "，未连接"))
+        .accessibilityElement(children: .contain).accessibilityLabel(spoken)
+    }
+    private func spot(_ active: Bool) -> some View {
+        Color.clear.frame(height: 30).anchorPreference(key: TileSpot.self, value: .bounds) { active ? $0 : nil }
+    }
+    private func bar(left: Double?, active: Bool, spent: Bool) -> some View {
+        let fill: Color = left == nil ? .clear : active ? green : Color(white: spent ? 0.9 : 0.8)
+        let dashed: Color = left == nil ? Color(white: 0.75) : .clear
+        return Capsule().fill(fill).frame(height: 8)
+            .overlay(Capsule().strokeBorder(dashed, style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+    }
+    private func name(_ slot: AccountSlot, active: Bool, spent: Bool) -> some View {
+        let ink: Color = active ? Color(white: 0.12) : spent ? Color(white: 0.6) : Color(white: 0.35)
+        let weight: Font.Weight = active ? .semibold : .regular
+        return Button { store.chooseAccount(slot.id) } label: {
+            Text(slot.displayName).font(.system(size: 12, weight: weight)).lineLimit(1).minimumScaleFactor(0.75).foregroundStyle(ink)
+        }.buttonStyle(.plain).disabled(store.preview || slot.expectedAccountID == nil).help(store.accountActionLabel(slot.id))
+    }
+    @ViewBuilder private func value(_ slot: AccountSlot, left: Double?, reset: Date?, active: Bool, spent: Bool) -> some View {
+        if let left {
+            let text: String = spent ? Self.untilReset(reset, now: store.now) : "\(Int(left))%"
+            let ink: Color = active ? green : spent ? Color(white: 0.6) : left < 15 ? orange : Color(white: 0.45)
+            let weight: Font.Weight = active ? .semibold : .regular
+            Text(text).font(.system(size: 11, weight: weight)).monospacedDigit().lineLimit(1).foregroundStyle(ink).allowsHitTesting(false)
+        } else {
+            Button("＋ 连接") { store.connectOrContinue(slot.id) }.buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium)).disabled(!store.canOpenConnection(slot.id))
+        }
+    }
+    private func spokenLabel(_ slot: AccountSlot, left: Double?, reset: Date?, active: Bool, spent: Bool) -> String {
+        var parts = [slot.displayName]
+        if active { parts.append("正在用") }
+        if let left { parts.append(spent ? "额度用完，" + Self.untilReset(reset, now: store.now) + "恢复" : "余量 \(Int(left))%") } else { parts.append("未连接") }
+        return parts.joined(separator: "，")
     }
     /// "5 天后" / "3 小时后" / "20 分钟后": how long until a spent account comes back.
     static func untilReset(_ date: Date?, now: Date) -> String {
