@@ -141,6 +141,9 @@ struct GeneralSettings: View {
                     card {
                         row("Tibo 重置提醒") { switchToggle(Binding(get: { store.resetMonitor.enabled }, set: store.setResetMonitoring)) }
                         Divider()
+                        row("用 Codex 判断公告") { switchToggle(Binding(get: { store.resetUsesModel }, set: store.setResetUsesModel)) }
+                        note(store.resetUsesModel ? "由你本机的 Codex 读每条新帖，能认出额度调整、读出具体时间；每条约用 2.6 万 tokens。" : "现在按关键词规则判断。打开后由你本机的 Codex 读帖，更准。").padding(.bottom, 8)
+                        Divider()
                         HStack(spacing: 6) {
                             Circle().fill(store.personalX.enabled && store.resetMonitor.enabled ? Color(red: 0.16, green: 0.66, blue: 0.3) : Color.secondary.opacity(0.35))
                                 .frame(width: 6, height: 6)

@@ -1004,9 +1004,32 @@ enum SlotStatus: Equatable {
             catch { self.personalX.lastError = (error as? PersonalXError ?? .unavailable).localizedDescription; self.savePersonalX() }
         }
     }
-    private func acceptPersonalXPosts(_ posts: [XVisiblePost], now: Date) throws {
+    /// The user's Codex reading of new posts, when they chose it in settings. A post is asked about once;
+    /// one the model could not judge falls back to the rules.
+    private func judge(_ posts: [(id: String, text: String, publishedAt: String)], among all: [(publishedAt: String, text: String)]) async -> [String: ResetJudge.Verdict] {
+        guard resetUsesModel, !posts.isEmpty, let binary = try? Self.binary() else { return [:] }
+        let gatewayURL = gatewayEnabled ? "http://127.0.0.1:\(gateway.port)/backend-api/codex" : nil
+        let newestFirst = all.sorted { $0.publishedAt > $1.publishedAt }
+        var verdicts: [String: ResetJudge.Verdict] = [:], judged = resetMonitor.judged ?? [:], failed = 0
+        for post in posts.prefix(5) {
+            if let known = judged[post.id] { verdicts[post.id] = known; continue }
+            guard ResetJudge.worthAsking(post.text) else { continue }
+            let earlier = newestFirst.filter { $0.publishedAt < post.publishedAt }.map(\.text)
+            if let verdict = await CodexJudge.verdict(text: post.text, postedAt: post.publishedAt, earlier: earlier, binary: binary, gateway: gatewayURL) {
+                verdicts[post.id] = verdict; judged[post.id] = verdict
+            } else { failed += 1 }
+        }
+        // Tweet ids grow over time: keep the newest readings.
+        if judged.count > 300 { judged = Dictionary(uniqueKeysWithValues: judged.sorted { ($0.key.count, $0.key) > ($1.key.count, $1.key) }.prefix(300).map { ($0.key, $0.value) }) }
+        resetMonitor.judged = judged; saveResetMonitor()
+        if failed > 0 { record("有 \(failed) 条 Tibo 新帖 Codex 没判断出来，已按规则判断。") }
+        return verdicts
+    }
+    @Published private(set) var resetUsesModel = UserDefaults.standard.bool(forKey: "reset.model")
+    func setResetUsesModel(_ on: Bool) { resetUsesModel = on; UserDefaults.standard.set(on, forKey: "reset.model") }
+    private func acceptPersonalXPosts(_ posts: [XVisiblePost], now: Date, verdicts: [String: ResetJudge.Verdict] = [:]) throws {
         var updated = personalX
-        let feed = updated.ingest(posts, now: now)
+        let feed = updated.ingest(posts, now: now, verdicts: verdicts)
         let signals = try resetMonitor.ingest(feed, accountIDs: saved.accounts.filter { $0.expectedAccountID != nil }.map(\.id), now: now)
         // Persist refresh work before advancing the X deduplication state. A crash may repeat a quota read, never lose a signal.
         saveResetMonitor()
@@ -1015,7 +1038,7 @@ enum SlotStatus: Equatable {
         guard savePersonalX() else { throw PersonalXError.storage }
         if let signal = signals.last {
             resetNextAttempt.removeAll()
-            record("个人 X 发现 Tibo \(signal.label)，刷新所有账号。原帖：\(signal.originalURL!.absoluteString)")
+            record("个人 X 发现 Tibo \(signal.label)\(signal.note == nil ? "" : "（Codex 判断）")，刷新所有账号。原帖：\(signal.originalURL!.absoluteString)")
             notifyReset(signal)
             retryResetRefresh()
         }
@@ -1117,9 +1140,12 @@ enum SlotStatus: Equatable {
                         for (i, post) in posts.enumerated().filter({ $0.element.truncated && !seen.contains($0.element.id) && ($0.element.date ?? .distantPast) >= since }).prefix(3) {
                             if let url = post.originalURL, let full = try await self.personalXBrowser.readPost(url) { posts[i] = full }
                         }
+                        let recent = Date().addingTimeInterval(-72 * 3600)
+                        let fresh = posts.filter { !seen.contains($0.id) && !$0.truncated && ($0.date ?? .distantPast) >= max(since, recent) }
+                        let verdicts = await self.judge(fresh.map { ($0.id, $0.text, $0.publishedAt) }, among: posts.map { ($0.publishedAt, $0.text) })
                         try Task.checkCancellation()
                         guard self.resetMonitor.enabled, self.resetCheckGeneration == generation else { return }
-                        try self.acceptPersonalXPosts(posts, now: Date())
+                        try self.acceptPersonalXPosts(posts, now: Date(), verdicts: verdicts)
                         self.resetCheckFailures = 0
                         return
                     } catch is CancellationError { return }
@@ -1131,7 +1157,13 @@ enum SlotStatus: Equatable {
                         self.nextResetCheck = Date().addingTimeInterval(300)
                     }
                 }
-                let feed = try await ResetAnnouncementAPI.fetch()
+                var feed = try await ResetAnnouncementAPI.fetch()
+                if self.resetUsesModel {
+                    let seenIDs = Set(self.resetMonitor.seenKeys.compactMap { $0.split(separator: ":").first.map(String.init) })
+                    let recent = Date().addingTimeInterval(-72 * 3600)
+                    let fresh = feed.items.filter { !seenIDs.contains($0.id) && ($0.date ?? .distantPast) >= max(self.resetMonitor.startedAt, recent) }
+                    feed = feed.applying(await self.judge(fresh.map { ($0.id, $0.text, $0.published_at) }, among: feed.items.map { ($0.published_at, $0.text) }))
+                }
                 try Task.checkCancellation()
                 guard self.resetMonitor.enabled, self.resetCheckGeneration == generation else { return }
                 let signals = try self.resetMonitor.ingest(feed, accountIDs: self.saved.accounts.filter { $0.expectedAccountID != nil }.map(\.id), now: Date())
@@ -1140,7 +1172,7 @@ enum SlotStatus: Equatable {
                 self.saveResetMonitor()
                 if let signal = signals.last, self.resetStorageAvailable {
                     self.resetNextAttempt.removeAll()
-                    self.record("检测到 Tibo \(signal.label)，开始刷新全部账号。原帖：\(signal.originalURL!.absoluteString)")
+                    self.record("检测到 Tibo \(signal.label)\(signal.note == nil ? "" : "（Codex 判断）")，开始刷新全部账号。原帖：\(signal.originalURL!.absoluteString)")
                     self.notifyReset(signal)
                     self.retryResetRefresh()
                 }

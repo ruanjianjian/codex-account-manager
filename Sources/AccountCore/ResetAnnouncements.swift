@@ -6,6 +6,9 @@ public struct ResetAnnouncement: Codable, Equatable {
     public let published_at: String
     public let url: String
     public let kind: String
+    /// Set when the user's Codex judged the post: the reset time it read, and a one-line explanation.
+    public var reset_at: String? = nil
+    public var note: String? = nil
     public var date: Date? { ResetFeed.date(published_at) }
     public var originalURL: URL? {
         guard id.range(of: #"^[0-9]{10,25}$"#, options: .regularExpression) != nil,
@@ -16,7 +19,10 @@ public struct ResetAnnouncement: Codable, Equatable {
         return URL(string: "https://x.com/thsottiaux/status/\(id)")
     }
     public var key: String { id + ":" + kind }
-    public var timing: ResetTiming? { date.map { ResetTiming.read(text, postedAt: $0) } }
+    public var timing: ResetTiming? {
+        if let at = reset_at.flatMap(ResetFeed.date) { return ResetTiming(expectedAt: at, hint: "") }
+        return date.map { ResetTiming.read(text, postedAt: $0) }
+    }
     /// A planned reset stays worth acting on until its time, or for a day when the post names none.
     public func isUpcoming(at now: Date) -> Bool {
         guard kind == "planned", let date, let timing else { return false }
@@ -24,7 +30,7 @@ public struct ResetAnnouncement: Codable, Equatable {
     }
     public var eligible: Bool {
         ["planned", "reported_completed", "banked", "possible_reset", "limits"].contains(kind) && originalURL != nil && date != nil
-            && (kind != "limits" || LimitsAnnouncement.matches(text))
+            && (kind != "limits" || note != nil || LimitsAnnouncement.matches(text))
     }
     public var label: String {
         if kind == "possible_reset" { return "重置相关新帖（待额度核验）" }
@@ -67,6 +73,8 @@ public struct ResetMonitorState: Codable {
     public var pendingAccountIDs: [String] = []
     public var refreshedAccountIDs: [String] = []
     public var targetCount = 0
+    /// The model's reading of recent posts, so a post is asked about once.
+    public var judged: [String: ResetJudge.Verdict]?
     public init(now: Date = Date()) { startedAt = now }
 
     @discardableResult public mutating func ingest(_ feed: ResetFeed, accountIDs: [String], now: Date) throws -> [ResetAnnouncement] {
@@ -194,10 +202,11 @@ public enum ResetNotice {
             let left = accounts.filter { $0.remaining >= 10 }.sorted { $0.remaining > $1.remaining }.prefix(3)
             let usage = left.isEmpty ? "各账号余量已不多。" : "还有余量：" + left.map { "\($0.name) \(Int($0.remaining))%" }.joined(separator: "、") + "，抓紧用。"
             return ("Tibo 预告重置额度", (post.timing?.describe(now: now) ?? "重置时间未说明") + "。" + usage)
-        case "reported_completed": return ("Tibo 宣布额度已重置", "正在刷新全部账号额度。")
-        case "limits": return ("Tibo 宣布额度调整", LimitsAnnouncement.headline(post.text) + " 正在刷新全部账号额度。")
-        case "banked": return ("Tibo 发放 banked reset", "正在刷新各账号的 banked reset。")
+        case "reported_completed": return ("Tibo 宣布额度已重置", lead(post) + "正在刷新全部账号额度。")
+        case "limits": return ("Tibo 宣布额度调整", (post.note.flatMap { $0.isEmpty ? nil : $0 + " " } ?? LimitsAnnouncement.headline(post.text) + " ") + "正在刷新全部账号额度。")
+        case "banked": return ("Tibo 发放 banked reset", lead(post) + "正在刷新各账号的 banked reset。")
         default: return nil
         }
     }
+    private static func lead(_ post: ResetAnnouncement) -> String { post.note.flatMap { $0.isEmpty ? nil : $0 + " " } ?? "" }
 }
