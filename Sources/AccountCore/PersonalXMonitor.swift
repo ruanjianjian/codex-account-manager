@@ -115,17 +115,20 @@ public struct PersonalXState: Codable {
         lastPosts = posts; lastCheckedAt = now; lastError = nil; possibleGap = false
     }
     /// The first successful read establishes a baseline. Historical announcements never replay.
-    public mutating func ingest(_ posts: [XVisiblePost], now: Date) -> ResetFeed {
+    /// `verdicts` are the user's Codex readings by post id; a post without one is read by the rules.
+    public mutating func ingest(_ posts: [XVisiblePost], now: Date, verdicts: [String: ResetJudge.Verdict] = [:]) -> ResetFeed {
         let valid = posts.filter { $0.isValid(at: now) }
         let seen = Set(seenIDs)
         let fresh = valid.filter { !seen.contains($0.id) }
         possibleGap = !seen.isEmpty && !valid.contains(where: { seen.contains($0.id) })
             && valid.map(\.date).compactMap { $0 }.min().map { $0 > (lastCheckedAt ?? now) } == true
         let items: [ResetAnnouncement] = baselineAt == nil ? [] : fresh.compactMap { post in
-            guard let kind = post.resetKind, let date = post.date, date >= baselineAt!,
+            let verdict = verdicts[post.id]
+            let kind = verdict.map { $0.kind == "none" ? nil : $0.kind } ?? post.resetKind
+            guard let kind, let date = post.date, date >= baselineAt!,
                   date >= now.addingTimeInterval(-72 * 3600) else { return nil }
             return ResetAnnouncement(id: post.id, text: post.text, published_at: post.publishedAt,
-                                     url: post.originalURL!.absoluteString, kind: kind)
+                                     url: post.originalURL!.absoluteString, kind: kind, reset_at: verdict?.reset_at, note: verdict?.note)
         }
         if baselineAt == nil { baselineAt = now }
         // A post still cut off ("Show more") is read again next time instead of being settled half-read.
