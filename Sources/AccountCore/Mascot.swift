@@ -1,7 +1,7 @@
 import Foundation
 
-/// The faces of Tibot's mascot, 「终端团子」.
-public enum MascotMood: String, Sendable { case open, blink, hop, star, hello, sad, sleep }
+/// The faces of Tibot's mascot.
+public enum MascotMood: String, Sendable { case open, blink, hop, star, hello, sad, puzzled }
 
 /// What the mascot looks like and says for the app's state. The panel, the desktop widget and the menu bar
 /// all ask here, so they never disagree.
@@ -67,7 +67,7 @@ public enum Mascot {
             if let from = accounts.first(where: { $0.id == move.from }), from.spent { return Line(.hop, "\(from.name) 用完，换到 \(to)") }
             return Line(.hop, "换到 \(to)")
         }
-        if input.routing && !input.gatewayReady { return Line(.open, "等待网关…") }
+        if input.routing && !input.gatewayReady { return Line(.puzzled, "等待网关…") }
         guard let current = name(input.current) else {
             if !accounts.contains(where: { $0.remaining != nil }) { return Line(.hello, "先连上账号吧") }
             return Line(.open, input.routing ? "等待请求" : "嗨，我是 Tibot")

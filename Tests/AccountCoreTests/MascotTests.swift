@@ -18,7 +18,7 @@ final class MascotTests: XCTestCase {
         XCTAssertEqual(line(accounts) { $0.current = "p"; $0.cacheHit = true }, .init(.open, "正在用 个人号 · 缓存命中"))
         XCTAssertEqual(line(accounts) { $0.current = "p"; $0.cacheHit = true; $0.routing = false }, .init(.open, "正在用 个人号"),
                        "the cache line is about routed requests only")
-        XCTAssertEqual(line(accounts) { $0.gatewayReady = false }, .init(.open, "等待网关…"))
+        XCTAssertEqual(line(accounts) { $0.gatewayReady = false }, .init(.puzzled, "等待网关…"))
         XCTAssertEqual(line(accounts), .init(.open, "等待请求"))
     }
     func testHopsWhenRoutingMovesOn() {
