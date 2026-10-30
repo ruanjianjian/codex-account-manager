@@ -48,6 +48,7 @@ public struct XVisiblePost: Codable, Equatable, Identifiable {
     }
     public var resetKind: String? {
         guard !truncated else { return nil }
+        if LimitsAnnouncement.matches(text) { return "limits" }
         let value = text.lowercased().replacingOccurrences(of: "’", with: "'")
         func matches(_ expression: String) -> Bool { value.range(of: expression, options: .regularExpression) != nil }
         guard matches(#"\breset(?:s|ting)?\b"#),
@@ -127,7 +128,9 @@ public struct PersonalXState: Codable {
                                      url: post.originalURL!.absoluteString, kind: kind)
         }
         if baselineAt == nil { baselineAt = now }
-        seenIDs = Array((seenIDs + fresh.map(\.id)).suffix(1000))
+        // A post still cut off ("Show more") is read again next time instead of being settled half-read.
+        let settled = baselineAt == now ? fresh : fresh.filter { !$0.truncated }
+        seenIDs = Array((seenIDs + settled.map(\.id)).suffix(1000))
         lastPosts = valid; lastCheckedAt = now; lastError = nil
         return ResetFeed(available: true, stale: possibleGap, handle: "thsottiaux",
                          updated_at: ISO8601DateFormatter().string(from: now), items: items)

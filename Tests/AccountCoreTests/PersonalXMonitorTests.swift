@@ -33,11 +33,19 @@ final class PersonalXMonitorTests: XCTestCase {
         XCTAssertEqual(post("2000000000000000001", "We will reset Codex limits for all users tonight.").resetKind, "planned")
         XCTAssertEqual(post("2000000000000000001", "Everyone receives an extra banked reset for Codex today.").resetKind, "banked")
         XCTAssertEqual(post("2000000000000000001", "Day 20/ Rest and reset").resetKind, "possible_reset")
+        XCTAssertEqual(post("2000000000000000001", "Day 25/ We are doubling all usage limits for all Pro tiers, effective today.").resetKind, "limits")
         XCTAssertEqual(post("2000000000000000001", "Day 21/ Wonder what happens the remaining seven days. But today is a reset.").resetKind, "possible_reset")
         for text in ["Codex limits reset every week", "We haven't reset Codex limits for everyone.", "I hope they reset Codex limits for everyone.", "Could we reset Codex for everyone?", "No reset for all users.", "Codex launch for everyone"] {
             XCTAssertNil(post("2000000000000000001", text).resetKind, text)
         }
         XCTAssertNil(post("2000000000000000001", truncated: true).resetKind)
+        // A cut-off post is not settled: it is looked at again, in full, on a later check.
+        var x = PersonalXState(); x.start(with: [], now: now)
+        let cut = post("2000000000000000003", age: 30, truncated: true)
+        XCTAssertTrue(x.ingest([cut], now: now.addingTimeInterval(60)).items.isEmpty)
+        XCTAssertFalse(x.seenIDs.contains(cut.id))
+        let whole = XVisiblePost(url: cut.url, text: "Day 25/ We are doubling all usage limits for all Pro tiers, effective today.", publishedAt: cut.publishedAt, truncated: false)
+        XCTAssertEqual(x.ingest([whole], now: now.addingTimeInterval(120)).items.map(\.kind), ["limits"])
     }
     func testFirstConnectionIsBaselineAndNextNewAnnouncementTriggersOneBatch() throws {
         var x = PersonalXState()

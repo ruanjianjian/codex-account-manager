@@ -1007,7 +1007,7 @@ enum SlotStatus: Equatable {
     private func acceptPersonalXPosts(_ posts: [XVisiblePost], now: Date) throws {
         var updated = personalX
         let feed = updated.ingest(posts, now: now)
-        let signals = try resetMonitor.ingest(feed, accountIDs: saved.accounts.map(\.id), now: now)
+        let signals = try resetMonitor.ingest(feed, accountIDs: saved.accounts.filter { $0.expectedAccountID != nil }.map(\.id), now: now)
         // Persist refresh work before advancing the X deduplication state. A crash may repeat a quota read, never lose a signal.
         saveResetMonitor()
         guard resetStorageAvailable else { throw PersonalXError.storage }
@@ -1052,7 +1052,18 @@ enum SlotStatus: Equatable {
         guard let notice = ResetNotice.message(for: signal, accounts: accounts, now: Date()) else { return }
         let content = UNMutableNotificationContent(); content.title = notice.title; content.body = notice.body; content.sound = .default
         if let link = signal.originalURL { content.userInfo = ["url": link.absoluteString] }
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "reset-" + signal.key, content: content, trigger: nil))
+        let request = UNNotificationRequest(identifier: "reset-" + signal.key, content: content, trigger: nil)
+        // A reminder that silently never shows is worse than none: say why in the activity list.
+        Task { @MainActor [weak self] in
+            let center = UNUserNotificationCenter.current()
+            var status = await center.notificationSettings().authorizationStatus
+            if status == .notDetermined { _ = try? await center.requestAuthorization(options: [.alert, .sound]); status = await center.notificationSettings().authorizationStatus }
+            guard status == .authorized || status == .provisional else {
+                self?.record("Tibo 提醒没能弹出：系统通知未允许 Tibot，请在「系统设置 → 通知 → Tibot」里打开。"); return
+            }
+            do { try await center.add(request); self?.record("已发出系统通知「\(notice.title)」。") }
+            catch { self?.record("Tibo 提醒没能弹出：\(error.localizedDescription)") }
+        }
     }
     /// A planned reset the user can still act on; shown on the widget and dashboard until it passes.
     var resetAlert: (text: String, url: URL)? {
@@ -1099,18 +1110,33 @@ enum SlotStatus: Equatable {
             }
             do {
                 if self.personalX.enabled {
-                    let posts = try await self.personalXBrowser.readTimeline(reload: true)
-                    try Task.checkCancellation()
-                    guard self.resetMonitor.enabled, self.resetCheckGeneration == generation else { return }
-                    try self.acceptPersonalXPosts(posts, now: Date())
-                    self.resetCheckFailures = 0
-                    return
+                    do {
+                        var posts = try await self.personalXBrowser.readTimeline(reload: true)
+                        // A new long post is cut off on the profile; read it in full before deciding what it says.
+                        let seen = Set(self.personalX.seenIDs), since = self.personalX.baselineAt ?? .distantFuture
+                        for (i, post) in posts.enumerated().filter({ $0.element.truncated && !seen.contains($0.element.id) && ($0.element.date ?? .distantPast) >= since }).prefix(3) {
+                            if let url = post.originalURL, let full = try await self.personalXBrowser.readPost(url) { posts[i] = full }
+                        }
+                        try Task.checkCancellation()
+                        guard self.resetMonitor.enabled, self.resetCheckGeneration == generation else { return }
+                        try self.acceptPersonalXPosts(posts, now: Date())
+                        self.resetCheckFailures = 0
+                        return
+                    } catch is CancellationError { return }
+                    catch {
+                        // X unreadable (signed out, rate-limited, page changed): say so, and still read the public source.
+                        guard !Task.isCancelled, self.resetCheckGeneration == generation else { return }
+                        self.personalX.lastError = (error as? PersonalXError ?? .unavailable).localizedDescription
+                        self.savePersonalX()
+                        self.nextResetCheck = Date().addingTimeInterval(300)
+                    }
                 }
                 let feed = try await ResetAnnouncementAPI.fetch()
                 try Task.checkCancellation()
                 guard self.resetMonitor.enabled, self.resetCheckGeneration == generation else { return }
-                let signals = try self.resetMonitor.ingest(feed, accountIDs: self.saved.accounts.map(\.id), now: Date())
+                let signals = try self.resetMonitor.ingest(feed, accountIDs: self.saved.accounts.filter { $0.expectedAccountID != nil }.map(\.id), now: Date())
                 self.resetCheckFailures = 0
+                if self.personalX.enabled, let xError = self.personalX.lastError { self.resetMonitor.lastError = xError + " 已改用公共源。" }
                 self.saveResetMonitor()
                 if let signal = signals.last, self.resetStorageAvailable {
                     self.resetNextAttempt.removeAll()
@@ -1124,11 +1150,9 @@ enum SlotStatus: Equatable {
                 self.resetCheckFailures += 1
                 let base: Double = self.personalX.enabled ? 60 : 300
                 self.nextResetCheck = Date().addingTimeInterval(min(1800, base * pow(2, Double(min(self.resetCheckFailures - 1, 5)))))
-                if self.personalX.enabled {
-                    self.personalX.lastError = (error as? PersonalXError ?? .unavailable).localizedDescription
-                    self.savePersonalX()
-                    self.resetMonitor.lastError = self.personalX.lastError
-                } else { self.resetMonitor.lastError = "公告检查失败，将自动重试；账号额度仍正常同步。" }
+                self.resetMonitor.lastError = self.personalX.enabled
+                    ? (self.personalX.lastError ?? "公告检查失败，将自动重试。")
+                    : "公告检查失败，将自动重试；账号额度仍正常同步。"
                 self.saveResetMonitor()
             }
         }

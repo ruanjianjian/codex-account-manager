@@ -14,11 +14,13 @@ import AccountCore
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.applicationNameForUserAgent = "Version/18.0 Safari/605.1.15"
-        webView = WKWebView(frame: .zero, configuration: config)
+        // X lays its timeline out for the viewport: a zero-sized, never-shown view renders no posts at all.
+        webView = WKWebView(frame: Self.readingFrame, configuration: config)
         super.init()
         webView.navigationDelegate = self
         webView.allowsBackForwardNavigationGestures = true
     }
+    private static let readingFrame = NSRect(x: 0, y: 0, width: 1200, height: 2400)
     func openTibo() {
         guard !fetching else { return }
         navigationFinished = false; navigationFailed = false
@@ -42,6 +44,7 @@ import AccountCore
         guard !fetching, !reload || !interactive else { throw PersonalXError.busy }
         fetching = true
         defer { fetching = false }
+        if webView.window == nil, webView.frame.width < 800 || webView.frame.height < 1200 { webView.setFrameSize(Self.readingFrame.size) }
         if reload || webView.url == nil {
             navigationFinished = false; navigationFailed = false
             webView.load(URLRequest(url: TiboPostLink.profileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
@@ -63,6 +66,24 @@ import AccountCore
             catch { lastError = PersonalXError.noPosts }
         }
         throw lastError
+    }
+    /// Long posts end in "Show more" on the profile; the post's own page shows all of it.
+    func readPost(_ url: URL) async throws -> XVisiblePost? {
+        guard !fetching, !interactive else { throw PersonalXError.busy }
+        fetching = true
+        defer { fetching = false }
+        navigationFinished = false; navigationFailed = false
+        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+        for _ in 0..<20 {
+            try await Task.sleep(for: .seconds(1))
+            try Task.checkCancellation()
+            if navigationFailed { throw PersonalXError.unavailable }
+            guard !webView.isLoading, navigationFinished,
+                  let text = try? await webView.evaluateJavaScript(Self.readScript) as? String,
+                  let page = try? JSONDecoder().decode(XTimelinePage.self, from: Data(text.utf8)) else { continue }
+            if let post = page.posts.first(where: { $0.url == url.absoluteString && !$0.truncated && $0.isValid(at: Date()) }) { return post }
+        }
+        return nil
     }
     func stop() { webView.stopLoading() }
     /// Whether the visible page is signed in and on Tibo's profile. Reads no post content.
