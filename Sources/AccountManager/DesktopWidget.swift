@@ -30,10 +30,10 @@ private struct ResizeSurface: NSViewRepresentable {
             }
         }
     }
-    func makeNSView(context: Context) -> NSView {
-        let view = Handle(); view.toolTip = L("拖动调整大小", "Drag to resize"); view.setAccessibilityLabel(L("拖动调整组件大小", "Drag to resize the widget")); return view
+    func makeNSView(context: Context) -> NSView { Handle() }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.toolTip = L("拖动调整大小", "Drag to resize"); nsView.setAccessibilityLabel(L("拖动调整组件大小", "Drag to resize the widget"))
     }
-    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 struct DragSurface: NSViewRepresentable {
     /// Moves the window itself rather than through performDrag, which a desktop-level panel ignores.
@@ -52,10 +52,8 @@ struct DragSurface: NSViewRepresentable {
         }
         override func mouseUp(with event: NSEvent) { start = nil }
     }
-    func makeNSView(context: Context) -> NSView {
-        let view = Handle(); view.toolTip = L("拖动组件", "Drag the widget"); return view
-    }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func makeNSView(context: Context) -> NSView { Handle() }
+    func updateNSView(_ nsView: NSView, context: Context) { nsView.toolTip = L("拖动组件", "Drag the widget") }
 }
 
 struct CoverPalette {

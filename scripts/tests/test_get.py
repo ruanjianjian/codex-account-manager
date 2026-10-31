@@ -72,6 +72,9 @@ class InstallerNetworkTests(unittest.TestCase):
     def test_unquoted_chinese_language(self):
         self.assert_language('(en, zh)', "zh")
 
+    def test_language_codes_ignore_case_like_the_app(self):
+        self.assert_language('( "en-US", "ZH-Hans" )', "zh")
+
     def test_zh_inside_another_language_does_not_match(self):
         self.assert_language('( "en-zh" )', "en")
 

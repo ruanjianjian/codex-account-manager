@@ -23,7 +23,7 @@ case "$lang" in
   *)
     lang=en
     if apple_languages="$(defaults read -g AppleLanguages 2>/dev/null)"; then
-      if printf '%s\n' "$apple_languages" | LC_ALL=C grep -Eq '(^|[[:space:],("])zh'; then
+      if printf '%s\n' "$apple_languages" | LC_ALL=C grep -Eiq '(^|[[:space:],("])zh'; then
         lang=zh
       fi
     fi

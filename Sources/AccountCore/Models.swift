@@ -91,7 +91,7 @@ public struct AccountSlot: Codable, Identifiable {
         if let value = nameOverride, !value.isEmpty { return value }
         if let value = codexName, !value.isEmpty { return value }
         if let email = snapshot?.identity.email ?? expectedEmail { return Presentation.maskedEmail(email) }
-        return name
+        return Presentation.placeholderName(name)
     }
     public var chromeProfile: String // "dedicated" or Chrome's directory name
     public var expectedEmail: String?
@@ -150,6 +150,14 @@ public enum IdentityCheck: Equatable {
     }
 }
 public enum Presentation {
+    /// Names Tibot made up itself ("新账号", "账号 3") follow the language; a name the user typed never changes.
+    public static func placeholderName(_ name: String) -> String {
+        if name == "新账号" || name == "New account" { return L("新账号", "New account") }
+        for prefix in ["账号 ", "Account "] where name.hasPrefix(prefix) {
+            if let n = Int(name.dropFirst(prefix.count)) { return L("账号 \(n)", "Account \(n)") }
+        }
+        return name
+    }
     public static func maskedEmail(_ email: String?) -> String {
         guard let email, let at = email.firstIndex(of: "@") else { return L("已验证账号", "Verified account") }
         return "\(email[..<at].prefix(2))•••\(email[at...])"

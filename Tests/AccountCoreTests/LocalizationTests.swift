@@ -29,6 +29,16 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(TokenActivity.compact(468_253), "468.25K")
         XCTAssertEqual(TokenActivity.compact(999), "999")
     }
+    func testMadeUpNamesFollowTheLanguage() {
+        L10n.choice = .en
+        XCTAssertEqual(Presentation.placeholderName("新账号"), "New account")
+        XCTAssertEqual(Presentation.placeholderName("账号 3"), "Account 3")
+        XCTAssertEqual(Presentation.placeholderName("工作号"), "工作号", "a name the user typed stays")
+        L10n.choice = .zh
+        XCTAssertEqual(Presentation.placeholderName("New account"), "新账号")
+        XCTAssertEqual(Presentation.placeholderName("Account 12"), "账号 12")
+        XCTAssertEqual(Presentation.placeholderName("Account twelve"), "Account twelve")
+    }
     func testChineseWordingUnchanged() {
         L10n.choice = .zh
         let now = Date(timeIntervalSince1970: 1_800_000_000)

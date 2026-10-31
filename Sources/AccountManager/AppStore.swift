@@ -201,7 +201,7 @@ enum SlotStatus: Equatable {
                 guard self.gatewayEnabled, self.gateway.running else { return }
                 do {
                     try self.gateway.install(); self.gatewayReady = true
-                    self.gatewayCaption = L("网关就绪 · 支持新旧会话，升级后重启 Codex", "Gateway ready · new and existing chats; restart Codex after upgrading")
+                    self.gatewayCaption = self.restingGatewayCaption
                 } catch { self.gatewayReady = false; self.gatewayCaption = error.localizedDescription }
             case "routing":
                 self.gatewayAccount = id
@@ -745,7 +745,17 @@ enum SlotStatus: Equatable {
     func setLanguage(_ choice: UILanguage) {
         guard choice != L10n.choice else { return }
         UserDefaults.standard.set(choice.rawValue, forKey: "ui.language"); L10n.choice = choice
+        // Lines already worded keep their language until they next change; restate the ones that would linger.
+        // Account statuses are reworded by the next sync, within a minute.
+        profiles = Self.readChromeProfiles(); banner = nil
+        gatewayCaption = restingGatewayCaption
+        updateCaption = pendingUpdate.map { L("发现 \($0)，空闲时自动更新", "\($0) available; updates when idle") } ?? ""
         objectWillChange.send(); onLanguageChange?(); onChange?()
+    }
+    private var restingGatewayCaption: String {
+        guard gatewayEnabled else { return L("自动路由未开启", "Auto routing is off") }
+        return gatewayReady ? L("网关就绪 · 支持新旧会话，升级后重启 Codex", "Gateway ready · new and existing chats; restart Codex after upgrading")
+            : L("正在启动本机网关…", "Starting the local gateway…")
     }
     func setAutoUpdate(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: "update.auto")
