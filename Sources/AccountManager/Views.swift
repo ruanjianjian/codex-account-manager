@@ -121,8 +121,8 @@ struct GeneralSettings: View {
                         row(L("桌面组件", "Desktop widget")) {
                             Picker(L("桌面组件", "Desktop widget"), selection: Binding(get: { store.desktopMode }, set: store.setDesktopMode)) {
                                 Text(L("关闭", "Off")).tag(AppStore.DesktopMode.off)
-                                Text(L("嵌入桌面", "On the desktop")).tag(AppStore.DesktopMode.embedded)
-                                Text(L("置顶浮动", "Floating on top")).tag(AppStore.DesktopMode.floating)
+                                Text(L("嵌入桌面", "Desktop")).tag(AppStore.DesktopMode.embedded)
+                                Text(L("置顶浮动", "On top")).tag(AppStore.DesktopMode.floating)
                             }.pickerStyle(.segmented).labelsHidden().fixedSize()
                         }
                         Divider()
@@ -244,7 +244,7 @@ struct GeneralSettings: View {
     }
     private func row<Trailing: View>(_ title: String, @ViewBuilder _ trailing: () -> Trailing) -> some View {
         HStack(spacing: 8) {
-            Text(title).font(.system(size: 12, weight: .medium))
+            Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1).fixedSize()
             Spacer(minLength: 8)
             trailing()
         }.padding(.vertical, 8)
