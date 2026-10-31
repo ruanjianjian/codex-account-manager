@@ -58,36 +58,37 @@ public enum Mascot {
     public static func line(_ input: Input) -> Line {
         let accounts = input.accounts
         func name(_ id: String?) -> String? { id.flatMap { id in accounts.first { $0.id == id }?.name } }
-        if accounts.isEmpty { return Line(.hello, "嗨，我是 Tibot") }
+        if accounts.isEmpty { return Line(.hello, L("嗨，我是 Tibot", "Hi, I'm Tibot")) }
         if allSpent(accounts), let next = nextBack(accounts) {
-            return Line(.sad, "额度都用完了，\(next.name) \(comesBack(next.backAt, now: input.now))")
+            return Line(.sad, L("额度都用完了，", "Every account is out; ") + "\(next.name) \(comesBack(next.backAt, now: input.now))")
         }
         if let alert = input.resetAlert { return Line(.star, alert) }
         if let move = input.switched, let to = name(move.to) {
-            if let from = accounts.first(where: { $0.id == move.from }), from.spent { return Line(.hop, "\(from.name) 用完，换到 \(to)") }
-            return Line(.hop, "换到 \(to)")
+            if let from = accounts.first(where: { $0.id == move.from }), from.spent { return Line(.hop, L("\(from.name) 用完，换到 \(to)", "\(from.name) ran out, switched to \(to)")) }
+            return Line(.hop, L("换到 \(to)", "Switched to \(to)"))
         }
-        if input.routing && !input.gatewayReady { return Line(.puzzled, "等待网关…") }
+        if input.routing && !input.gatewayReady { return Line(.puzzled, L("等待网关…", "Waiting for the gateway…")) }
         guard let current = name(input.current) else {
-            if !accounts.contains(where: { $0.remaining != nil }) { return Line(.hello, "先连上账号吧") }
-            return Line(.open, input.routing ? "等待请求" : "嗨，我是 Tibot")
+            if !accounts.contains(where: { $0.remaining != nil }) { return Line(.hello, L("先连上账号吧", "Connect an account first")) }
+            return Line(.open, input.routing ? L("等待请求", "Waiting for requests") : L("嗨，我是 Tibot", "Hi, I'm Tibot"))
         }
-        return Line(.open, "正在用 \(current)" + (input.routing && input.cacheHit == true ? " · 缓存命中" : ""))
+        return Line(.open, L("正在用 \(current)", "Using \(current)") + (input.routing && input.cacheHit == true ? L(" · 缓存命中", " · cache hit") : ""))
     }
 
-    /// "5 天后" / "3 小时后" / "20 分钟后": how long until a spent account comes back.
+    /// "5 天后" / "in 5 days": how long until a spent account comes back.
     public static func untilReset(_ date: Date?, now: Date) -> String {
-        guard let date else { return "等待重置" }
+        guard let date else { return L("等待重置", "waiting for a reset") }
         let seconds = date.timeIntervalSince(now)
-        if seconds <= 0 { return "即将恢复" }
-        if seconds >= 86_400 { return "\(Int(seconds / 86_400)) 天后" }
-        if seconds >= 3_600 { return "\(Int(seconds / 3_600)) 小时后" }
-        return "\(max(1, Int(seconds / 60))) 分钟后"
+        if seconds <= 0 { return L("即将恢复", "back soon") }
+        func count(_ n: Int, _ zh: String, _ one: String) -> String { L("\(n) \(zh)后", "in \(n) \(one)\(n == 1 ? "" : "s")") }
+        if seconds >= 86_400 { return count(Int(seconds / 86_400), "天", "day") }
+        if seconds >= 3_600 { return count(Int(seconds / 3_600), "小时", "hour") }
+        return count(max(1, Int(seconds / 60)), "分钟", "minute")
     }
-    /// "3 小时后恢复", or "即将恢复" / "等待重置" when the time has passed or is unknown.
+    /// "3 小时后恢复" / "back in 3 hours", or "即将恢复" / "等待重置" when the time has passed or is unknown.
     public static func comesBack(_ date: Date?, now: Date) -> String {
         guard let date, date > now else { return untilReset(date, now: now) }
-        return untilReset(date, now: now) + "恢复"
+        return L(untilReset(date, now: now) + "恢复", "back " + untilReset(date, now: now))
     }
 }
 

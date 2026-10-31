@@ -49,8 +49,8 @@ public enum TokenActivity {
     /// "近 7 天", "上周", then the week's dates ("10-10 – 10-16").
     public static func weekTitle(_ week: [TokenDay], weeksAgo: Int) -> String {
         switch weeksAgo {
-        case 0: return "近 7 天"
-        case 1: return "上周"
+        case 0: return L("近 7 天", "Last 7 days")
+        case 1: return L("上周", "Last week")
         default: return "\(week.first?.id.suffix(5) ?? "") – \(week.last?.id.suffix(5) ?? "")"
         }
     }
@@ -75,13 +75,14 @@ public enum TokenActivity {
         }
     }
     public static func compact(_ count: Int64) -> String {
-        let units: [(Int64, String)] = [(100_000_000, "亿"), (10_000_000, "千万"), (1_000_000, "百万"), (10_000, "万")]
+        let units: [(Int64, String)] = L10n.chinese ? [(100_000_000, " 亿"), (10_000_000, " 千万"), (1_000_000, " 百万"), (10_000, " 万")]
+            : [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")]
         guard let (scale, unit) = units.first(where: { count >= $0.0 }) else { return count.formatted() }
         let formatter = NumberFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.locale = Locale(identifier: L10n.chinese ? "zh_CN" : "en_US")
         formatter.maximumFractionDigits = 2; formatter.minimumFractionDigits = 0
         formatter.usesGroupingSeparator = false
-        return (formatter.string(from: NSNumber(value: Double(count) / Double(scale))) ?? String(count)) + " " + unit
+        return (formatter.string(from: NSNumber(value: Double(count) / Double(scale))) ?? String(count)) + unit
     }
 
 }

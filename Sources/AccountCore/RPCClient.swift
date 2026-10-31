@@ -4,14 +4,14 @@ public enum ClientFailure: Error, LocalizedError {
     case missingBinary, timeout, disconnected, invalidResponse, authentication, keychainAccess, service(Int), fileAccess
     public var errorDescription: String? {
         switch self {
-        case .missingBinary: return "未找到 Codex CLI，请安装后重新打开 Tibot。"
-        case .timeout: return "服务响应超时，已保留上次数据；稍后自动重试。"
-        case .disconnected: return "采集连接已中断，稍后会重新连接。"
-        case .invalidResponse: return "服务返回格式无法识别，请更新 Tibot 后重试。"
-        case .keychainAccess: return "钥匙串访问未完成，已暂停自动同步。请从此账号菜单点“刷新”手动重试。"
-        case .authentication: return "登录需要重新验证，请点“重新连接”。"
-        case .service(let code): return "服务暂不可用（\(code)），已保留登录；稍后重试。若持续失败，请检查网络。"
-        case .fileAccess: return "无法保存本机数据，请检查目录权限。"
+        case .missingBinary: return L("未找到 Codex CLI，请安装后重新打开 Tibot。", "Codex CLI not found. Install it, then reopen Tibot.")
+        case .timeout: return L("服务响应超时，已保留上次数据；稍后自动重试。", "The service timed out. The last data is kept; retrying soon.")
+        case .disconnected: return L("采集连接已中断，稍后会重新连接。", "The sync connection dropped; it will reconnect shortly.")
+        case .invalidResponse: return L("服务返回格式无法识别，请更新 Tibot 后重试。", "Unrecognized response from the service. Update Tibot and try again.")
+        case .keychainAccess: return L("钥匙串访问未完成，已暂停自动同步。请从此账号菜单点“刷新”手动重试。", "Keychain access did not finish, so auto sync is paused. Choose “Refresh” in this account's menu to retry.")
+        case .authentication: return L("登录需要重新验证，请点“重新连接”。", "The login needs to be verified again. Click “Reconnect”.")
+        case .service(let code): return L("服务暂不可用（\(code)），已保留登录；稍后重试。若持续失败，请检查网络。", "The service is unavailable (\(code)). The login is kept; retrying later. If this keeps failing, check your network.")
+        case .fileAccess: return L("无法保存本机数据，请检查目录权限。", "Could not save local data. Check the folder permissions.")
         }
     }
 }

@@ -19,12 +19,12 @@ public enum DesktopSwitchFailure: LocalizedError {
     case unsupportedStorage, identity, persistence, busy, collectorsBusy, collectorStop
     public var errorDescription: String? {
         switch self {
-        case .unsupportedStorage: return "当前 Codex 登录存储配置尚未适配，未修改登录。"
-        case .identity: return "登录凭据与所选账号不符。"
-        case .persistence: return "登录备份或保存失败。"
-        case .busy: return "仍有采集或登录操作进行中，请稍后再试。"
-        case .collectorsBusy: return "额度或用量查询尚未结束，请等待同步结束后重试。"
-        case .collectorStop: return "Tibot 的采集进程未能退出，请重新打开 Tibot 后重试。"
+        case .unsupportedStorage: return L("当前 Codex 登录存储配置尚未适配，未修改登录。", "This Codex login storage setup is not supported yet; the login was left unchanged.")
+        case .identity: return L("登录凭据与所选账号不符。", "The login does not match the selected account.")
+        case .persistence: return L("登录备份或保存失败。", "Could not back up or save the login.")
+        case .busy: return L("仍有采集或登录操作进行中，请稍后再试。", "A sync or login is still running. Try again in a moment.")
+        case .collectorsBusy: return L("额度或用量查询尚未结束，请等待同步结束后重试。", "Quota or usage is still syncing. Try again when it finishes.")
+        case .collectorStop: return L("Tibot 的采集进程未能退出，请重新打开 Tibot 后重试。", "Tibot's sync process did not quit. Reopen Tibot and try again.")
         }
     }
 }

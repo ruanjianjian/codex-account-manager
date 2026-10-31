@@ -9,14 +9,14 @@ import AccountCore
         case noRelease, download, checksum, unpack, signature, wrongBundle, notWritable, replace
         var errorDescription: String? {
             switch self {
-            case .noRelease: return "没读到最新版本号"
-            case .download: return "下载失败"
-            case .checksum: return "SHA-256 校验不通过"
-            case .unpack: return "安装包解压失败"
-            case .signature: return "安装包签名校验不通过"
-            case .wrongBundle: return "安装包不是这个 App 或版本不符"
-            case .notWritable: return "App 所在文件夹不可写"
-            case .replace: return "替换 App 失败，已保留原版本"
+            case .noRelease: return L("没读到最新版本号", "could not read the latest version")
+            case .download: return L("下载失败", "download failed")
+            case .checksum: return L("SHA-256 校验不通过", "SHA-256 check failed")
+            case .unpack: return L("安装包解压失败", "could not unpack the update")
+            case .signature: return L("安装包签名校验不通过", "the update's signature check failed")
+            case .wrongBundle: return L("安装包不是这个 App 或版本不符", "the update is not this app or the version does not match")
+            case .notWritable: return L("App 所在文件夹不可写", "the app's folder is not writable")
+            case .replace: return L("替换 App 失败，已保留原版本", "could not replace the app; the old version is kept")
             }
         }
     }

@@ -65,10 +65,10 @@ import AccountCore
         }
     }
     nonisolated static func reason(_ stderr: String, port: Int) -> String {
-        if stderr.contains("port is already occupied") { return "端口 \(port) 已被占用，可能另一版本的 Tibot 仍在运行" }
-        if stderr.contains("local credential registry unavailable") { return "Codex 当前登录未连接到 Tibot，或桌面凭据已过期" }
-        if stderr.contains("configuration unavailable") { return "网关账号池不可用" }
-        return "网关进程意外退出"
+        if stderr.contains("port is already occupied") { return L("端口 \(port) 已被占用，可能另一版本的 Tibot 仍在运行", "Port \(port) is in use; another Tibot version may still be running") }
+        if stderr.contains("local credential registry unavailable") { return L("Codex 当前登录未连接到 Tibot，或桌面凭据已过期", "The account Codex is signed in to is not connected to Tibot, or the desktop login expired") }
+        if stderr.contains("configuration unavailable") { return L("网关账号池不可用", "The gateway's account pool is unavailable") }
+        return L("网关进程意外退出", "The gateway process exited unexpectedly")
     }
     func install() throws { try configuration.install(key: key, port: port) }
     func stop(restore: Bool) throws {

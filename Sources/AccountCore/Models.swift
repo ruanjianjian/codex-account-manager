@@ -7,11 +7,11 @@ public struct QuotaWindow: Codable, Equatable {
     public var remaining: Double? { usedPercent.flatMap { $0.isFinite ? min(100, max(0, 100 - $0)) : nil } }
     public var resetDate: Date? { resetsAt.map(Date.init(timeIntervalSince1970:)) }
     public var label: String {
-        guard let mins = windowDurationMins else { return "额度窗口" }
-        if mins == 10080 { return "每周额度" }
-        if mins % 1440 == 0 { return "\(mins / 1440) 天额度" }
-        if mins % 60 == 0 { return "\(mins / 60) 小时额度" }
-        return "\(mins) 分钟额度"
+        guard let mins = windowDurationMins else { return L("额度窗口", "Usage window") }
+        if mins == 10080 { return L("每周额度", "Weekly limit") }
+        if mins % 1440 == 0 { return L("\(mins / 1440) 天额度", "\(mins / 1440)-day limit") }
+        if mins % 60 == 0 { return L("\(mins / 60) 小时额度", "\(mins / 60)-hour limit") }
+        return L("\(mins) 分钟额度", "\(mins)-minute limit")
     }
     public init(usedPercent: Double? = nil, windowDurationMins: Int? = nil, resetsAt: Double? = nil) {
         self.usedPercent = usedPercent; self.windowDurationMins = windowDurationMins; self.resetsAt = resetsAt
@@ -91,7 +91,7 @@ public struct AccountSlot: Codable, Identifiable {
         if let value = nameOverride, !value.isEmpty { return value }
         if let value = codexName, !value.isEmpty { return value }
         if let email = snapshot?.identity.email ?? expectedEmail { return Presentation.maskedEmail(email) }
-        return name
+        return Presentation.placeholderName(name)
     }
     public var chromeProfile: String // "dedicated" or Chrome's directory name
     public var expectedEmail: String?
@@ -106,12 +106,12 @@ public struct AccountSlot: Codable, Identifiable {
         id.range(of: "^account-[a-zA-Z0-9-]{1,80}$", options: .regularExpression) != nil
     }
     public static var defaults: [AccountSlot] { [
-        .init(id: "account-1", name: "示例账号 1", chromeProfile: "dedicated"),
-        .init(id: "account-2", name: "示例账号 2", chromeProfile: "dedicated"),
-        .init(id: "account-3", name: "示例账号 3", chromeProfile: "dedicated"),
-        .init(id: "account-4", name: "示例账号 4", chromeProfile: "dedicated"),
-        .init(id: "account-5", name: "账号 5", chromeProfile: "dedicated"),
-        .init(id: "account-6", name: "账号 6", chromeProfile: "dedicated")
+        .init(id: "account-1", name: L("示例账号 1", "Sample account 1"), chromeProfile: "dedicated"),
+        .init(id: "account-2", name: L("示例账号 2", "Sample account 2"), chromeProfile: "dedicated"),
+        .init(id: "account-3", name: L("示例账号 3", "Sample account 3"), chromeProfile: "dedicated"),
+        .init(id: "account-4", name: L("示例账号 4", "Sample account 4"), chromeProfile: "dedicated"),
+        .init(id: "account-5", name: L("账号 5", "Account 5"), chromeProfile: "dedicated"),
+        .init(id: "account-6", name: L("账号 6", "Account 6"), chromeProfile: "dedicated")
     ] }
 }
 public struct ActivityEntry: Codable, Identifiable {
@@ -150,18 +150,37 @@ public enum IdentityCheck: Equatable {
     }
 }
 public enum Presentation {
+    /// Names Tibot made up itself ("新账号", "账号 3") follow the language; a name the user typed never changes.
+    public static func placeholderName(_ name: String) -> String {
+        if name == "新账号" || name == "New account" { return L("新账号", "New account") }
+        for prefix in ["账号 ", "Account "] where name.hasPrefix(prefix) {
+            if let n = Int(name.dropFirst(prefix.count)) { return L("账号 \(n)", "Account \(n)") }
+        }
+        return name
+    }
     public static func maskedEmail(_ email: String?) -> String {
-        guard let email, let at = email.firstIndex(of: "@") else { return "已验证账号" }
+        guard let email, let at = email.firstIndex(of: "@") else { return L("已验证账号", "Verified account") }
         return "\(email[..<at].prefix(2))•••\(email[at...])"
     }
+    /// "4 天 3 小时后" / "in 4d 3h"; the time left until a reset.
     public static func countdown(_ date: Date?, now: Date = Date()) -> String {
-        guard let date else { return "重置时间未知" }
+        guard let date else { return L("重置时间未知", "Reset time unknown") }
+        guard let span = span(until: date, now: now) else { return L("已到重置时间 · 待同步", "Reset due · syncing") }
+        return L(span + "后", "in " + span)
+    }
+    /// "4 天 3 小时后重置" / "resets in 4d 3h".
+    public static func resetCountdown(_ date: Date?, now: Date = Date()) -> String {
+        guard let date, let span = span(until: date, now: now) else { return countdown(date, now: now) }
+        return L(span + "后重置", "resets in " + span)
+    }
+    /// "4 天 3 小时" / "4d 3h", or nil once the time has come.
+    public static func span(until date: Date, now: Date) -> String? {
         let seconds = date.timeIntervalSince(now)
-        if seconds <= 0 { return "已到重置时间 · 待同步" }
+        if seconds <= 0 { return nil }
         let minutes = max(1, Int(ceil(seconds / 60)))
-        if minutes >= 1440 { return "\(minutes / 1440) 天 \((minutes % 1440) / 60) 小时后" }
-        if minutes >= 60 { return "\(minutes / 60) 小时 \(minutes % 60) 分后" }
-        return "\(minutes) 分钟后"
+        if minutes >= 1440 { return L("\(minutes / 1440) 天 \((minutes % 1440) / 60) 小时", "\(minutes / 1440)d \((minutes % 1440) / 60)h") }
+        if minutes >= 60 { return L("\(minutes / 60) 小时 \(minutes % 60) 分", "\(minutes / 60)h \(minutes % 60)m") }
+        return L("\(minutes) 分钟", "\(minutes) min")
     }
     public static func recommendation(_ slots: [AccountSlot], healthy: Set<String>, now: Date = Date()) -> String? {
         let candidates = slots.filter { healthy.contains($0.id) && $0.snapshot?.isFresh(at: now) == true && $0.snapshot?.rates.canRecommend == true }
@@ -170,6 +189,7 @@ public enum Presentation {
             return (slot, window)
         }.sorted { $0.1.resetDate! < $1.1.resetDate! }
         guard let first = ranked.first else { return nil }
-        return "优先考虑 \(first.0.displayName) · \(first.1.label)剩余 \(Int(first.1.remaining!))%，\(countdown(first.1.resetDate, now: now))重置"
+        return L("优先考虑 \(first.0.displayName) · \(first.1.label)剩余 \(Int(first.1.remaining!))%，\(resetCountdown(first.1.resetDate, now: now))",
+                 "Use \(first.0.displayName) first · \(first.1.label) \(Int(first.1.remaining!))% left, \(resetCountdown(first.1.resetDate, now: now))")
     }
 }

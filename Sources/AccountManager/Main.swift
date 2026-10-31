@@ -7,6 +7,7 @@ import AccountCore
 @main struct Main {
     @MainActor static func main() {
         umask(0o077)
+        AppStore.loadLanguage()
         signal(SIGPIPE, SIG_IGN)
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
@@ -46,8 +47,8 @@ import AccountCore
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusItemClicked(_:))
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        statusItem.button?.toolTip = "悬停查看账号；移开收起；右键打开菜单"
         store.onChange = { [weak self] in self?.updateMenu() }
+        store.onLanguageChange = { [weak self] in self?.installMainMenu(); self?.relabel() }
         routingWatch = store.$routingActivity.sink { [weak self] activity in
             DispatchQueue.main.async { self?.animateStatusIcon(busy: !activity.active.isEmpty) }
         }
@@ -64,7 +65,7 @@ import AccountCore
         hotKey.action = { [weak self] in self?.toggleFromShortcut() }
         store.onShortcutChange = { [weak self] in self?.registerShortcut() }
         registerShortcut()
-        updateMenu(); updateDesktopPanel()
+        relabel(); updateMenu(); updateDesktopPanel()
         // Launch restores only the widget visibility; there is no separate dashboard.
     }
     private func widgetSize(on screen: NSScreen?) -> NSSize {
@@ -82,7 +83,6 @@ import AccountCore
     }
     private func makeDesktopPanel() {
         desktopPanel = DesktopPanel(contentRect: NSRect(x: 0, y: 0, width: DesktopWidgetView.size(for: store.saved.accounts.count).width, height: DesktopWidgetView.size(for: store.saved.accounts.count).height), styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
-        desktopPanel.title = "Tibot · 账号"
         desktopPanel.isOpaque = false; desktopPanel.backgroundColor = .clear
         desktopPanel.hasShadow = true; desktopPanel.hidesOnDeactivate = false
         desktopPanel.isReleasedWhenClosed = false; desktopPanel.delegate = self
@@ -104,7 +104,6 @@ import AccountCore
     /// Desktop level, like macOS's own widgets: every app window covers it, it stays on all Spaces.
     private func makeEmbeddedPanel() {
         embeddedPanel = DesktopPanel(contentRect: NSRect(origin: .zero, size: EmbeddedWidgetView.size(for: store.saved.accounts.count)), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        embeddedPanel.title = "Tibot · 桌面组件"
         embeddedPanel.isOpaque = false; embeddedPanel.backgroundColor = .clear
         embeddedPanel.hasShadow = true; embeddedPanel.hidesOnDeactivate = false
         embeddedPanel.isReleasedWhenClosed = false; embeddedPanel.isMovableByWindowBackground = true
@@ -150,7 +149,7 @@ import AccountCore
     private func registerShortcut() {
         if store.shortcutChoice == "none" { hotKey.stop(); store.shortcutIssue = nil; updateMenu(); return }
         let result = hotKey.register(store.shortcutChoice)
-        store.shortcutIssue = result == 0 ? nil : "\(store.shortcutLabel) 无法注册，可能已被其他应用占用。请选择另一个两键组合。"
+        store.shortcutIssue = result == 0 ? nil : L("\(store.shortcutLabel) 无法注册，可能已被其他应用占用。请选择另一个两键组合。", "Could not register \(store.shortcutLabel); another app may be using it. Choose another two-key combination.")
         updateMenu()
     }
     private func toggleFromShortcut() { interaction.cancelPendingOpen(); presentWidget(toggle: true) }
@@ -203,27 +202,33 @@ import AccountCore
         UserDefaults.standard.removeObject(forKey: "desktop.height")
         updateDesktopPanel()
     }
+    /// Words AppKit keeps until told otherwise; SwiftUI views follow the store on their own.
+    private func relabel() {
+        statusItem.button?.toolTip = L("悬停查看账号；移开收起；右键打开菜单", "Hover to see accounts; move away to hide; right-click for the menu")
+        desktopPanel.title = L("Tibot · 账号", "Tibot · Accounts")
+        embeddedPanel.title = L("Tibot · 桌面组件", "Tibot · Desktop widget")
+    }
     private func installMainMenu() {
         let main = NSMenu()
         let application = NSMenuItem(); main.addItem(application)
         let appMenu = NSMenu(title: "Tibot")
         application.submenu = appMenu
-        let about = NSMenuItem(title: "关于 Tibot", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let about = NSMenuItem(title: L("关于 Tibot", "About Tibot"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         about.target = NSApp; appMenu.addItem(about)
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(settings), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: L("设置…", "Settings…"), action: #selector(settings), keyEquivalent: ",")
         settingsItem.target = self; appMenu.addItem(settingsItem)
         appMenu.addItem(.separator())
-        let hide = NSMenuItem(title: "隐藏 Tibot", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hide = NSMenuItem(title: L("隐藏 Tibot", "Hide Tibot"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         hide.target = NSApp; appMenu.addItem(hide)
-        let quitItem = NSMenuItem(title: "退出 Tibot", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: L("退出 Tibot", "Quit Tibot"), action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self; appMenu.addItem(quitItem)
-        let file = NSMenuItem(title: "窗口", action: nil, keyEquivalent: "")
-        let windowMenu = NSMenu(title: "窗口"); file.submenu = windowMenu
-        windowMenu.addItem(NSMenuItem(title: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        let file = NSMenuItem(title: L("窗口", "Window"), action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: L("窗口", "Window")); file.submenu = windowMenu
+        windowMenu.addItem(NSMenuItem(title: L("关闭窗口", "Close Window"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
         main.addItem(file)
-        let edit = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
-        let editMenu = NSMenu(title: "编辑"); edit.submenu = editMenu
-        for (title, action, key) in [("撤销", "undo:", "z"), ("剪切", "cut:", "x"), ("复制", "copy:", "c"), ("粘贴", "paste:", "v"), ("全选", "selectAll:", "a")] {
+        let edit = NSMenuItem(title: L("编辑", "Edit"), action: nil, keyEquivalent: "")
+        let editMenu = NSMenu(title: L("编辑", "Edit")); edit.submenu = editMenu
+        for (title, action, key) in [(L("撤销", "Undo"), "undo:", "z"), (L("剪切", "Cut"), "cut:", "x"), (L("复制", "Copy"), "copy:", "c"), (L("粘贴", "Paste"), "paste:", "v"), (L("全选", "Select All"), "selectAll:", "a")] {
             editMenu.addItem(NSMenuItem(title: title, action: Selector(action), keyEquivalent: key))
         }
         main.addItem(edit); NSApp.mainMenu = main
@@ -246,30 +251,30 @@ import AccountCore
         RunLoop.main.add(hopTimer!, forMode: .common)
     }
     private func updateMenu() {
-        statusItem.button?.title = " " + (store.preview ? "额度预览" : store.menuTitle)
+        statusItem.button?.title = " " + (store.preview ? L("额度预览", "Quota preview") : store.menuTitle)
         let menu = NSMenu()
-        let open = NSMenuItem(title: "显示账号卡片", action: #selector(showWidget), keyEquivalent: ""); open.target = self; menu.addItem(open)
-        let desktop = NSMenuItem(title: "嵌入桌面组件", action: #selector(toggleDesktop), keyEquivalent: "")
+        let open = NSMenuItem(title: L("显示账号卡片", "Show account cards"), action: #selector(showWidget), keyEquivalent: ""); open.target = self; menu.addItem(open)
+        let desktop = NSMenuItem(title: L("嵌入桌面组件", "Desktop widget"), action: #selector(toggleDesktop), keyEquivalent: "")
         desktop.target = self; desktop.state = store.embeddedVisible ? .on : .off; menu.addItem(desktop)
-        let pin = NSMenuItem(title: "组件置顶", action: #selector(toggleDesktopPin), keyEquivalent: "")
+        let pin = NSMenuItem(title: L("组件置顶", "Keep widget on top"), action: #selector(toggleDesktopPin), keyEquivalent: "")
         pin.target = self; pin.state = store.desktopPinned ? .on : .off; menu.addItem(pin)
-        let position = NSMenuItem(title: "重置组件位置", action: #selector(resetPositions), keyEquivalent: "")
+        let position = NSMenuItem(title: L("重置组件位置", "Reset widget position"), action: #selector(resetPositions), keyEquivalent: "")
         position.target = self; menu.addItem(position)
-        let size = NSMenuItem(title: "恢复默认尺寸", action: #selector(resetDesktopSize), keyEquivalent: "")
+        let size = NSMenuItem(title: L("恢复默认尺寸", "Restore default size"), action: #selector(resetDesktopSize), keyEquivalent: "")
         size.target = self; menu.addItem(size)
         menu.addItem(.separator())
         for slot in store.saved.accounts {
-            let remaining = slot.snapshot?.rates.windows.compactMap(\.remaining).min().map { "\(Int($0))%" } ?? "未知"
+            let remaining = slot.snapshot?.rates.windows.compactMap(\.remaining).min().map { "\(Int($0))%" } ?? L("未知", "unknown")
             let status = store.status[slot.id] ?? .disconnected
-            let freshness = slot.snapshot?.isFresh(at: store.now) == true && status == .connected ? "" : " · 待同步"
+            let freshness = slot.snapshot?.isFresh(at: store.now) == true && status == .connected ? "" : L(" · 待同步", " · sync pending")
             let item = NSMenuItem(title: "\(slot.displayName)  ·  \(remaining)\(freshness)", action: nil, keyEquivalent: "")
             menu.addItem(item)
         }
         menu.addItem(.separator())
-        let refresh = NSMenuItem(title: "刷新全部账号", action: #selector(refreshAll), keyEquivalent: "r"); refresh.target = self; menu.addItem(refresh)
-        let settings = NSMenuItem(title: "设置…", action: #selector(settings), keyEquivalent: ","); settings.target = self; menu.addItem(settings)
+        let refresh = NSMenuItem(title: L("刷新全部账号", "Refresh all accounts"), action: #selector(refreshAll), keyEquivalent: "r"); refresh.target = self; menu.addItem(refresh)
+        let settings = NSMenuItem(title: L("设置…", "Settings…"), action: #selector(settings), keyEquivalent: ","); settings.target = self; menu.addItem(settings)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "退出 Tibot", action: #selector(quit), keyEquivalent: "q"); quit.target = self; menu.addItem(quit)
+        let quit = NSMenuItem(title: L("退出 Tibot", "Quit Tibot"), action: #selector(quit), keyEquivalent: "q"); quit.target = self; menu.addItem(quit)
         statusMenu = menu
     }
     @objc private func showWidget() { presentWidget(toggle: false) }

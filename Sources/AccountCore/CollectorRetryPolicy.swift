@@ -14,5 +14,8 @@ public struct CollectorRetryPolicy {
         }
     }
     public mutating func resume(_ account: String) { paused.remove(account) }
-    public static let message = "钥匙串访问未完成或查询超时，已暂停自动同步。旧数据保留；请从此账号菜单点“刷新”手动重试。"
+    public static var message: String {
+        L("钥匙串访问未完成或查询超时，已暂停自动同步。旧数据保留；请从此账号菜单点“刷新”手动重试。",
+          "Keychain access did not finish or the query timed out, so auto sync is paused. Old data is kept; choose “Refresh” in this account's menu to retry.")
+    }
 }

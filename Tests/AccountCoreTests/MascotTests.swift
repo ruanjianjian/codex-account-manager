@@ -2,6 +2,7 @@ import XCTest
 @testable import AccountCore
 
 final class MascotTests: XCTestCase {
+    override func setUp() { L10n.choice = .zh } // these check the Chinese wording
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private func account(_ id: String, _ remaining: Double?, backIn hours: Double? = nil) -> Mascot.Account {
         .init(id: id, name: id == "w" ? "工作号" : "个人号", remaining: remaining, backAt: hours.map { now.addingTimeInterval($0 * 3600) })

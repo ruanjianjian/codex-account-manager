@@ -2,6 +2,7 @@ import XCTest
 @testable import AccountCore
 
 final class PrivateBuildImportTests: XCTestCase {
+    override func setUp() { L10n.choice = .zh } // these check the Chinese wording
     func auth(_ id: String) -> Data {
         try! JSONSerialization.data(withJSONObject: ["tokens": ["account_id": id, "access_token": "x-\(id)", "refresh_token": "y-\(id)"]])
     }

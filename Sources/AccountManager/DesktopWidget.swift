@@ -30,10 +30,10 @@ private struct ResizeSurface: NSViewRepresentable {
             }
         }
     }
-    func makeNSView(context: Context) -> NSView {
-        let view = Handle(); view.toolTip = "拖动调整大小"; view.setAccessibilityLabel("拖动调整组件大小"); return view
+    func makeNSView(context: Context) -> NSView { Handle() }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.toolTip = L("拖动调整大小", "Drag to resize"); nsView.setAccessibilityLabel(L("拖动调整组件大小", "Drag to resize the widget"))
     }
-    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 struct DragSurface: NSViewRepresentable {
     /// Moves the window itself rather than through performDrag, which a desktop-level panel ignores.
@@ -52,10 +52,8 @@ struct DragSurface: NSViewRepresentable {
         }
         override func mouseUp(with event: NSEvent) { start = nil }
     }
-    func makeNSView(context: Context) -> NSView {
-        let view = Handle(); view.toolTip = "拖动组件"; return view
-    }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func makeNSView(context: Context) -> NSView { Handle() }
+    func updateNSView(_ nsView: NSView, context: Context) { nsView.toolTip = L("拖动组件", "Drag the widget") }
 }
 
 struct CoverPalette {
@@ -86,19 +84,19 @@ struct DesktopWidgetView: View {
                     MascotHeader(store: store)
                 }.frame(maxWidth: .infinity).frame(height: 28)
                 Button { present(.add) } label: { Image(systemName: "plus").frame(width: 22, height: 24).contentShape(Rectangle()) }
-                    .help("添加账号").accessibilityLabel("添加新的Codex账号")
+                    .help(L("添加账号", "Add account")).accessibilityLabel(L("添加新的Codex账号", "Add a new Codex account"))
                 Button { store.refreshAll() } label: { Image(systemName: "arrow.clockwise") }
-                    .disabled(store.isBusy || store.preview).help("刷新所有账号").accessibilityLabel("刷新组件额度")
+                    .disabled(store.isBusy || store.preview).help(L("刷新所有账号", "Refresh all accounts")).accessibilityLabel(L("刷新组件额度", "Refresh widget quotas"))
                 Button { store.setDesktopPinned(!store.desktopPinned) } label: { Image(systemName: store.desktopPinned ? "pin.fill" : "pin") }
-                    .help("组件置顶").accessibilityLabel(store.desktopPinned ? "取消组件置顶" : "置顶组件")
+                    .help(L("组件置顶", "Keep widget on top")).accessibilityLabel(store.desktopPinned ? L("取消组件置顶", "Stop keeping the widget on top") : L("置顶组件", "Keep the widget on top"))
                 Button { present(.settings) } label: { Image(systemName: "slider.horizontal.3") }
-                    .help("设置").accessibilityLabel("打开设置")
+                    .help(L("设置", "Settings")).accessibilityLabel(L("打开设置", "Open Settings"))
             }.buttonStyle(.plain).font(.system(size: 13))
             if store.gatewayEnabled { RoutingActivityView(store: store) } else if !store.preview { RoutingSetupView(store: store) }
             if let banner = store.banner {
                 HStack(alignment: .top) {
                     Text(banner).font(.caption).fixedSize(horizontal: false, vertical: true)
-                    Button { store.banner = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("关闭提示")
+                    Button { store.banner = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel(L("关闭提示", "Dismiss"))
                 }.foregroundStyle(.orange)
             }
             ScrollView {
@@ -116,11 +114,11 @@ struct DesktopWidgetView: View {
                 }
             TokenActivityMini(store: store) { present(.activity) }
             HStack(spacing: 6) {
-                Text(store.preview ? "模拟数据" : "\(store.connectedCount)/\(store.saved.accounts.count) 已连接")
+                Text(store.preview ? L("模拟数据", "Sample data") : L("\(store.connectedCount)/\(store.saved.accounts.count) 已连接", "\(store.connectedCount)/\(store.saved.accounts.count) connected"))
                 Spacer()
-                Text(store.isBusy ? "同步中" : "每分钟同步")
-                Button { store.setDesktopVisible(false) } label: { Text(store.shortcutChoice == "none" ? "隐藏" : store.shortcutLabel + " 隐藏") }
-                    .buttonStyle(.plain).help(store.shortcutChoice == "none" ? "隐藏后可从菜单栏呼出" : "隐藏后可用快捷键呼出")
+                Text(store.isBusy ? L("同步中", "Syncing") : L("每分钟同步", "Syncs every minute"))
+                Button { store.setDesktopVisible(false) } label: { Text(store.shortcutChoice == "none" ? L("隐藏", "Hide") : store.shortcutLabel + L(" 隐藏", " Hide")) }
+                    .buttonStyle(.plain).help(store.shortcutChoice == "none" ? L("隐藏后可从菜单栏呼出", "Bring it back from the menu bar") : L("隐藏后可用快捷键呼出", "Bring it back with the shortcut"))
             }.font(.system(size: 10, weight: .medium)).frame(height: 16)
         }
         .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -132,7 +130,7 @@ struct DesktopWidgetView: View {
                     .font(.system(size: 10)).rotationEffect(.degrees(-45))
                     .foregroundStyle(.secondary.opacity(0.6)).allowsHitTesting(false)
                 ResizeSurface()
-            }.frame(width: 20, height: 20).help("拖动调整大小")
+            }.frame(width: 20, height: 20).help(L("拖动调整大小", "Drag to resize"))
         }
         .preferredColorScheme(.light)
     }
@@ -158,7 +156,7 @@ struct DesktopWidgetView: View {
                 Menu { accountActions(slot) } label: {
                     Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold)).frame(width: 20, height: 20)
                 }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().environment(\.colorScheme, .dark)
-                    .accessibilityLabel("\(slot.displayName) 账号选项")
+                    .accessibilityLabel(L("\(slot.displayName) 账号选项", "\(slot.displayName) account options"))
             }
             Spacer(minLength: 2)
             if let remaining {
@@ -167,12 +165,12 @@ struct DesktopWidgetView: View {
                     Text("%").font(.system(size: 17, weight: .bold))
                     Spacer(minLength: 4)
                     if !fresh {
-                        Text("旧快照\n" + state.label).font(.system(size: 8)).tracking(0)
+                        Text(L("旧快照\n", "Old snapshot\n") + state.label).font(.system(size: 8)).tracking(0)
                             .foregroundStyle(.white).multilineTextAlignment(.trailing).lineLimit(3)
-                            .help("旧快照 · " + state.label)
+                            .help(L("旧快照 · ", "Old snapshot · ") + state.label)
                     }
                 }.foregroundStyle(colors.ink).monospacedDigit()
-                    .accessibilityLabel("\(slot.displayName) 最低窗口余量 \(Int(remaining))%")
+                    .accessibilityLabel(L("\(slot.displayName) 最低窗口余量 \(Int(remaining))%", "\(slot.displayName), lowest window \(Int(remaining))% left"))
             } else {
                 Button { store.connectOrContinue(slot.id) } label: {
                     Text("＋").font(.system(size: state.message == nil ? 32 : 24, weight: .light)).foregroundStyle(colors.ink)
@@ -186,18 +184,18 @@ struct DesktopWidgetView: View {
                     .buttonStyle(.plain).font(.system(size: 11, weight: .medium))
                     .disabled(!store.canOpenConnection(slot.id))
                 if store.loginSlotID == slot.id {
-                    Button("取消授权") { Task { await store.cancelLogin() } }.buttonStyle(.plain).font(.system(size: 10)).padding(.top, 4)
+                    Button(L("取消授权", "Cancel sign-in")) { Task { await store.cancelLogin() } }.buttonStyle(.plain).font(.system(size: 10)).padding(.top, 4)
                 } else {
-                    Text(state.message == nil ? "登录后自动保存" : "请选择另一个账号").font(.system(size: 10)).padding(.top, 4)
+                    Text(state.message == nil ? L("登录后自动保存", "Saved once you sign in") : L("请选择另一个账号", "Choose another account")).font(.system(size: 10)).padding(.top, 4)
                 }
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("\(window.label) · \(window.remaining.map { "\(Int($0))%" } ?? "未知")")
-                                Text(Presentation.countdown(window.resetDate, now: store.now).replacingOccurrences(of: "后", with: "后重置"))
-                                    .help(window.resetDate?.formatted(date: .abbreviated, time: .shortened) ?? "重置时间未知")
+                                Text(L("\(window.label) · \(window.remaining.map { "\(Int($0))%" } ?? "未知")", "\(window.label) · \(window.remaining.map { "\(Int($0))%" } ?? "unknown")"))
+                                Text(Presentation.resetCountdown(window.resetDate, now: store.now))
+                                    .help(window.resetDate?.formatted(date: .abbreviated, time: .shortened) ?? L("重置时间未知", "Reset time unknown"))
                             }
                         }
                     }.font(.system(size: 10)).frame(maxWidth: .infinity, alignment: .leading)
@@ -220,19 +218,19 @@ struct DesktopWidgetView: View {
         Button(store.accountActionLabel(slot.id)) { store.chooseAccount(slot.id) }
             .disabled(store.preview || slot.expectedAccountID == nil)
         Divider()
-        Button("额度与 reset 明细…") { present(.details(slot.id)) }.disabled(slot.snapshot == nil)
-        Button("名称与浏览器…") { present(.edit(slot)) }
-        Button("刷新") { store.refresh(slot.id) }.disabled(store.status[slot.id] == .checking || store.preview)
-        Button("在浏览器查看用量") { store.openAccountPage(slot.id) }
+        Button(L("额度与 reset 明细…", "Quota and reset details…")) { present(.details(slot.id)) }.disabled(slot.snapshot == nil)
+        Button(L("名称与浏览器…", "Name and browser…")) { present(.edit(slot)) }
+        Button(L("刷新", "Refresh")) { store.refresh(slot.id) }.disabled(store.status[slot.id] == .checking || store.preview)
+        Button(L("在浏览器查看用量", "View usage in the browser")) { store.openAccountPage(slot.id) }
         Divider()
         if store.loginSlotID == slot.id {
-            Button("继续授权") { store.reopenLogin() }
-            Button("取消授权") { Task { await store.cancelLogin() } }
+            Button(L("继续授权", "Continue sign-in")) { store.reopenLogin() }
+            Button(L("取消授权", "Cancel sign-in")) { Task { await store.cancelLogin() } }
         } else {
-            Button("重新连接") { store.connect(slot.id) }
+            Button(L("重新连接", "Reconnect")) { store.connect(slot.id) }
                 .disabled(store.loginSlotID != nil || store.status[slot.id] == .checking || !store.canConnect)
         }
-        Button("移除账号…", role: .destructive) { present(.remove(slot)) }
+        Button(L("移除账号…", "Remove account…"), role: .destructive) { present(.remove(slot)) }
             .disabled(store.loginSlotID != nil || store.status[slot.id] == .checking || !store.canConnect)
     }
 }
@@ -265,7 +263,7 @@ private struct MascotHeader: View {
             .background(fill, in: RoundedRectangle(cornerRadius: 10))
             .overlay(alignment: .leading) { BubbleTail().fill(fill).frame(width: 5, height: 8).offset(x: -4) }
         if let alert {
-            Link(destination: alert.url) { text.foregroundStyle(Color(red: 0.75, green: 0.32, blue: 0.02)) }.help("打开 Tibo 原帖")
+            Link(destination: alert.url) { text.foregroundStyle(Color(red: 0.75, green: 0.32, blue: 0.02)) }.help(L("打开 Tibo 原帖", "Open Tibo's post"))
         } else {
             text.allowsHitTesting(false)
         }

@@ -1,5 +1,40 @@
 # Tibot
 
+## English
+
+Tibot is a local-first macOS menu-bar app for multiple Codex accounts. See each account's remaining quota and let a local gateway route Codex chats to an available account. **Requires macOS 14 or later and Apple silicon.** Sign in to Codex desktop before installing. Tibot switches to English automatically on Macs without Chinese anywhere in the preferred language list; you can change the app language in **Settings → Language**.
+
+**Paste this to your agent** (Claude Code, Codex, or similar):
+
+```text
+Please install or update Tibot on this Mac (the open-source Codex multi-account menu-bar app, https://github.com/ruanjianjian/codex-account-manager).
+Run this yourself in the terminal: curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/main/scripts/get.sh | bash
+You may read the script first: it installs only into ~/Applications, verifies SHA-256, and needs no sudo.
+When finished, quote the final message exactly; it explains whether I need to restart Codex or sign in to Codex desktop first. If GitHub is unreachable, ask me to enable the system proxy in my proxy app, then retry. Do not use sudo or bypass macOS security checks. Quote any other error exactly too.
+```
+
+Or install directly in Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/main/scripts/get.sh | bash
+```
+
+The installer downloads the latest release, verifies SHA-256 and the app signature, moves an older app to the Trash while preserving accounts and settings, installs into `~/Applications`, and opens Tibot. Automatic setup moves login credentials into a private local directory (as Codex does by default; **the files are not encrypted**), connects your signed-in Codex desktop account, and enables auto routing. Restart Codex once after first setup for already-open chats; new chats use routing immediately. Keep Tibot running while using routing. Updates preserve accounts and logins and do not require another Codex restart. **Auto update** can be turned off in **Settings**; rerun the same command for a manual update. To install without automatic setup, append `CODEX_ACCOUNTS_SKIP_SETUP=1 bash` in place of `bash` after the pipe. To force the installer's language, use `TIBOT_LANG=en bash` or `TIBOT_LANG=zh bash` there instead.
+
+This is an independent community tool, not affiliated with or endorsed by OpenAI or X. You sign in to your own accounts; no accounts, API keys, cookies, or personal login data are included.
+
+### Troubleshooting and first launch
+
+- **GitHub download fails:** enable your proxy app's system proxy and retry. The installer picks up macOS HTTPS or SOCKS proxy settings unless a terminal proxy is already set, and retries failed downloads.
+- **`502 Bad Gateway: Unknown error` at `127.0.0.1:18456`:** the gateway may be unable to reach ChatGPT. Update using the install command and check **System Settings → Network → your network service → Details → Proxies** for an HTTPS or SOCKS proxy, or use your proxy app's TUN mode. PAC (automatic proxy configuration) is not supported. Exporting `https_proxy` only in Terminal does not configure Tibot launched from the GUI.
+- **An old chat fails when its account runs out of quota:** update Tibot; current routing can continue the chat with another available account. Check **Automatic account routing** in **Settings** if setup has not completed. To change the account signed in to Codex desktop itself, sign out and back in within Codex.
+- **Manual download / first open:** download the archive and `SHA256SUMS.txt` from [Releases](https://github.com/ruanjianjian/codex-account-manager/releases), verify with `shasum -a 256 -c SHA256SUMS.txt`, extract into `~/Applications`, and open Tibot. Install Google Chrome in `/Applications` and the official Codex CLI (or use the CLI bundled with Codex desktop). Open Tibot from the menu bar and use `+` to authorize accounts, including any required 2FA.
+- **Gatekeeper:** the beta is ad-hoc signed, without Apple Developer ID signing or notarization. Command-line downloads normally lack the browser quarantine marker, so the one-line install avoids the manual approval flow. For a verified download blocked as an unidentified developer or because Apple cannot check it for malicious software, try opening it once, then go to **System Settings → Privacy & Security**, find the Tibot notice under Security, click **Open Anyway**, authenticate, and click **Open**. Do not disable Gatekeeper. If no button appears, confirm you tried opening the app; managed Macs may restrict approval. If macOS says the app “will damage your computer” or “is damaged and can't be opened”, download again and recheck the checksum instead of treating it as a routine notarization warning. See [Apple's guidance](https://support.apple.com/en-us/102445). Building from source is another option.
+
+Accounts and settings live in `~/Library/Application Support/CodexAccountsPublic/`; do not delete this directory when updating or share its login files. To uninstall, disable **Automatic account routing**, restart Codex, disable **Open at login**, then quit Tibot and move it to the Trash. Deleting the app leaves its data intact; remove the public app's data directory manually only if you also want to erase its local accounts and cache.
+
+---
+
 **交给 agent 安装**：把下面这句话发给 Claude Code、Codex 等 agent，它会自己装好；已经装过的会更新到最新版，账号和登录都保留。
 
 ```text
@@ -10,7 +45,7 @@
 
 A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 工具：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
-**测试版 v0.4.19-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+**测试版 v0.4.20-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
 
 ## 一行安装
 
@@ -78,7 +113,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 ## 手动安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.19-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.20-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 App 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。装了 Codex 桌面（ChatGPT App）就自带 CLI，本版用其内置 CLI 0.165 验证；旧版 CLI 可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
