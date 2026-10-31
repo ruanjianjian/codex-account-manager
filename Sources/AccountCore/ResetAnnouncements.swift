@@ -33,9 +33,10 @@ public struct ResetAnnouncement: Codable, Equatable {
             && (kind != "limits" || note != nil || LimitsAnnouncement.matches(text))
     }
     public var label: String {
-        if kind == "possible_reset" { return "重置相关新帖（待额度核验）" }
-        if kind == "limits" { return "额度调整公告" }
-        return kind == "banked" ? "banked reset 发放公告" : (kind == "planned" ? "重置预告" : "重置完成公告")
+        if kind == "possible_reset" { return L("重置相关新帖（待额度核验）", "Post about a reset (checking quotas)") }
+        if kind == "limits" { return L("额度调整公告", "Limits change") }
+        if kind == "banked" { return L("banked reset 发放公告", "Banked resets handed out") }
+        return kind == "planned" ? L("重置预告", "Reset coming") : L("重置完成公告", "Reset done")
     }
 }
 public struct ResetFeed: Decodable {
@@ -56,7 +57,7 @@ public struct ResetFeed: Decodable {
 }
 public enum ResetFeedError: LocalizedError {
     case unavailable, invalidResponse
-    public var errorDescription: String? { self == .unavailable ? "公告源暂不可用" : "公告接口返回异常" }
+    public var errorDescription: String? { self == .unavailable ? L("公告源暂不可用", "The announcement source is unavailable") : L("公告接口返回异常", "The announcement source returned an error") }
 }
 
 /// Public announcements only trigger a read of official quotas. They never set a quota.
@@ -179,16 +180,19 @@ public struct ResetTiming: Equatable {
             return ResetTiming(expectedAt: postedAt.addingTimeInterval(seconds), hint: "")
         }
         func has(_ expression: String) -> Bool { value.range(of: expression, options: .regularExpression) != nil }
-        if has(#"\bfew hours\b"#) { return ResetTiming(expectedAt: nil, hint: "几小时内") }
-        if has(#"\btomorrow\b"#) { return ResetTiming(expectedAt: nil, hint: "明天") }
-        if has(#"\b(tonight|later today|this (morning|afternoon|evening)|today)\b"#) { return ResetTiming(expectedAt: nil, hint: "今天晚些时候") }
-        if has(#"\bthis (week|weekend)\b"#) { return ResetTiming(expectedAt: nil, hint: "本周内") }
-        if has(#"\b(soon|shortly|momentarily)\b"#) { return ResetTiming(expectedAt: nil, hint: "即将") }
+        if has(#"\bfew hours\b"#) { return ResetTiming(expectedAt: nil, hint: L("几小时内", "within hours")) }
+        if has(#"\btomorrow\b"#) { return ResetTiming(expectedAt: nil, hint: L("明天", "tomorrow")) }
+        if has(#"\b(tonight|later today|this (morning|afternoon|evening)|today)\b"#) { return ResetTiming(expectedAt: nil, hint: L("今天晚些时候", "later today")) }
+        if has(#"\bthis (week|weekend)\b"#) { return ResetTiming(expectedAt: nil, hint: L("本周内", "this week")) }
+        if has(#"\b(soon|shortly|momentarily)\b"#) { return ResetTiming(expectedAt: nil, hint: L("即将", "soon")) }
         return ResetTiming(expectedAt: nil, hint: "")
     }
     public func describe(now: Date) -> String {
-        if let expectedAt { return expectedAt > now ? "约 " + Presentation.countdown(expectedAt, now: now) + "重置" : "已到预告的重置时间" }
-        return hint.isEmpty ? "重置时间未说明" : hint + "重置"
+        if let expectedAt {
+            guard let span = Presentation.span(until: expectedAt, now: now) else { return L("已到预告的重置时间", "The announced reset time has come") }
+            return L("约 \(span)后重置", "Resets in about \(span)")
+        }
+        return hint.isEmpty ? L("重置时间未说明", "Reset time not stated") : L(hint + "重置", "Resets " + hint)
     }
 }
 
@@ -200,11 +204,13 @@ public enum ResetNotice {
         switch post.kind {
         case "planned":
             let left = accounts.filter { $0.remaining >= 10 }.sorted { $0.remaining > $1.remaining }.prefix(3)
-            let usage = left.isEmpty ? "各账号余量已不多。" : "还有余量：" + left.map { "\($0.name) \(Int($0.remaining))%" }.joined(separator: "、") + "，抓紧用。"
-            return ("Tibo 预告重置额度", (post.timing?.describe(now: now) ?? "重置时间未说明") + "。" + usage)
-        case "reported_completed": return ("Tibo 宣布额度已重置", lead(post) + "正在刷新全部账号额度。")
-        case "limits": return ("Tibo 宣布额度调整", (post.note.flatMap { $0.isEmpty ? nil : $0 + " " } ?? LimitsAnnouncement.headline(post.text) + " ") + "正在刷新全部账号额度。")
-        case "banked": return ("Tibo 发放 banked reset", lead(post) + "正在刷新各账号的 banked reset。")
+            let shares = left.map { "\($0.name) \(Int($0.remaining))%" }
+            let usage = left.isEmpty ? L("各账号余量已不多。", "Little quota left on any account.")
+                : L("还有余量：" + shares.joined(separator: "、") + "，抓紧用。", "Left: " + shares.joined(separator: ", ") + ". Use them up.")
+            return (L("Tibo 预告重置额度", "Tibo: limits reset soon"), (post.timing?.describe(now: now) ?? L("重置时间未说明", "Reset time not stated")) + L("。", ". ") + usage)
+        case "reported_completed": return (L("Tibo 宣布额度已重置", "Tibo: limits have been reset"), lead(post) + L("正在刷新全部账号额度。", "Refreshing every account's quota."))
+        case "limits": return (L("Tibo 宣布额度调整", "Tibo: limits changed"), (post.note.flatMap { $0.isEmpty ? nil : $0 + " " } ?? LimitsAnnouncement.headline(post.text) + " ") + L("正在刷新全部账号额度。", "Refreshing every account's quota."))
+        case "banked": return (L("Tibo 发放 banked reset", "Tibo: banked resets handed out"), lead(post) + L("正在刷新各账号的 banked reset。", "Refreshing each account's banked resets."))
         default: return nil
         }
     }

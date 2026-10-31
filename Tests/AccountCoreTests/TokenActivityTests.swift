@@ -2,6 +2,7 @@ import XCTest
 @testable import AccountCore
 
 final class TokenActivityTests: XCTestCase {
+    override func setUp() { L10n.choice = .zh } // these check the Chinese wording
     func testSumsAccountsWithoutTurningMissingBucketsIntoZero() throws {
         let a = TokenUsageResponse(buckets: [.init(startDate: "2026-10-26", tokens: 100), .init(startDate: "2026-10-27", tokens: 0)])
         let b = TokenUsageResponse(buckets: [.init(startDate: "2026-10-26", tokens: 200)])

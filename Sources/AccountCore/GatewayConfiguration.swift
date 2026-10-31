@@ -4,10 +4,10 @@ public enum GatewayConfigurationError: LocalizedError {
     case conflict, credentials, unavailable, desktopIdentity
     public var errorDescription: String? {
         switch self {
-        case .conflict: return "Codex 配置已被其他程序修改，自动恢复已停止。备份仍保留在网关目录。"
-        case .credentials: return "请先连接账号并启用本地文件存储，再启用自动路由。"
-        case .unavailable: return "本机网关启动失败；请检查端口占用后重试。"
-        case .desktopIdentity: return "Codex 当前登录未匹配已连接账号，或桌面凭据已过期。请先将当前账号连接到 Tibot；未修改 Codex 配置。"
+        case .conflict: return L("Codex 配置已被其他程序修改，自动恢复已停止。备份仍保留在网关目录。", "Another program changed the Codex config, so auto restore stopped. The backup is still in the gateway folder.")
+        case .credentials: return L("请先连接账号并启用本地文件存储，再启用自动路由。", "Connect an account and turn on local file storage before turning on auto routing.")
+        case .unavailable: return L("本机网关启动失败；请检查端口占用后重试。", "The local gateway failed to start. Check whether the port is in use and try again.")
+        case .desktopIdentity: return L("Codex 当前登录未匹配已连接账号，或桌面凭据已过期。请先将当前账号连接到 Tibot；未修改 Codex 配置。", "Codex is signed in to an account Tibot has not connected, or the desktop login expired. Connect the current account to Tibot first; the Codex config was left unchanged.")
         }
     }
 }

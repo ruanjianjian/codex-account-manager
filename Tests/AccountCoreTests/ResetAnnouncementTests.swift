@@ -2,6 +2,7 @@ import XCTest
 @testable import AccountCore
 
 final class ResetAnnouncementTests: XCTestCase {
+    override func setUp() { L10n.choice = .zh } // these check the Chinese wording
     let start = Date(timeIntervalSince1970: 1_790_000_000)
     func post(_ id: String = "2115000000000000001", kind: String = "reported_completed", offset: Double = 10, url: String? = nil) -> ResetAnnouncement {
         ResetAnnouncement(id: id, text: "Test announcement", published_at: ISO8601DateFormatter().string(from: start.addingTimeInterval(offset)), url: url ?? "https://x.com/thsottiaux/status/\(id)", kind: kind)

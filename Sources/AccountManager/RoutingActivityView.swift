@@ -14,13 +14,13 @@ struct RoutingActivityView: View {
     private var slots: [AccountSlot] { store.saved.accounts }
     private var flowHeight: CGFloat { CGFloat(max(3, min(6, slots.count))) * 23 }
     private var summary: String {
-        if !store.gatewayReady { return "等待网关" }
-        if !activity.active.isEmpty { return "\(activity.active.count) 个请求处理中" }
+        if !store.gatewayReady { return L("等待网关", "Waiting for the gateway") }
+        if !activity.active.isEmpty { return L("\(activity.active.count) 个请求处理中", "\(activity.active.count) request\(activity.active.count == 1 ? "" : "s") in progress") }
         switch activity.lastKind {
-        case "completed": return "最近一次已完成"
-        case "refused", "network_error", "interrupted", "rejected": return "最近请求遇到错误"
-        case "ended": return "请求已结束"
-        default: return "等待请求"
+        case "completed": return L("最近一次已完成", "Last request done")
+        case "refused", "network_error", "interrupted", "rejected": return L("最近请求遇到错误", "Last request hit an error")
+        case "ended": return L("请求已结束", "Request ended")
+        default: return L("等待请求", "Waiting for requests")
         }
     }
     var body: some View {
@@ -35,10 +35,10 @@ struct RoutingActivityView: View {
                     Text(summary).font(.system(size: 9)).foregroundStyle(.white.opacity(0.75))
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
                 }.padding(.horizontal, 10).frame(height: 28).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel("实时路由，\(summary)，\(expanded ? "收起" : "展开")")
+            }.buttonStyle(.plain).accessibilityLabel(L("实时路由，\(summary)，\(expanded ? "收起" : "展开")", "Live routing, \(summary), \(expanded ? "collapse" : "expand")"))
             if expanded {
                 if slots.isEmpty {
-                    Text("连接账号后显示请求流向").font(.caption).foregroundStyle(.white.opacity(0.7)).padding(12)
+                    Text(L("连接账号后显示请求流向", "Connect an account to see where requests go")).font(.caption).foregroundStyle(.white.opacity(0.7)).padding(12)
                 } else {
                     ScrollView(.vertical) {
                         // Animate only while rockets fly or a burst plays; at rest the route is drawn once, costing no CPU.
@@ -49,10 +49,10 @@ struct RoutingActivityView: View {
                     }.frame(height: flowHeight).scrollIndicators(.hidden)
                 }
                 HStack(spacing: 6) {
-                    Text(store.gatewayPreferred.isEmpty ? "最早重置优先" : "优先指定账号")
+                    Text(store.gatewayPreferred.isEmpty ? L("最早重置优先", "Soonest reset first") : L("优先指定账号", "Chosen account first"))
                     Spacer(minLength: 0)
-                    Text("\(activity.completed) 完成 · \(activity.reroutes) 换路")
-                        .monospacedDigit().help("本次启动后的请求统计；换路只在真正尝试下一个账号时计数")
+                    Text(L("\(activity.completed) 完成 · \(activity.reroutes) 换路", "\(activity.completed) done · \(activity.reroutes) rerouted"))
+                        .monospacedDigit().help(L("本次启动后的请求统计；换路只在真正尝试下一个账号时计数", "Requests since launch; a reroute counts only when another account is actually tried"))
                 }.font(.system(size: 9)).foregroundStyle(.white.opacity(0.65))
                     .padding(.horizontal, 10).padding(.top, 5).padding(.bottom, 9)
             }
@@ -78,7 +78,7 @@ struct RoutingActivityView: View {
                 Text("CODEX").font(.system(size: 7, weight: .heavy, design: .monospaced)).foregroundStyle(.white.opacity(0.7))
                     .position(x: 28, y: h / 2 + 16)
                 Color.clear.frame(width: 24, height: 24).position(center)
-                    .accessibilityElement().accessibilityLabel("本机网关")
+                    .accessibilityElement().accessibilityLabel(L("本机网关", "Local gateway"))
                 ForEach(Array(slots.enumerated()), id: \.element.id) { index, slot in
                     let count = activity.count(for: slot.id)
                     let color = CoverPalette.all[index % CoverPalette.all.count].ink
@@ -95,8 +95,8 @@ struct RoutingActivityView: View {
                         .background(count > 0 ? color.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 2))
                         .foregroundStyle(.white.opacity(count > 0 ? 1 : 0.65))
                         .position(x: (destinationX + w - 8) / 2, y: CGFloat(index) * 23 + 11.5)
-                        .help(slot.displayName + (count > 0 ? " · \(count) 个请求处理中" : ""))
-                        .accessibilityLabel(slot.displayName + (count > 0 ? "，\(count) 个请求处理中" : "，当前无请求"))
+                        .help(slot.displayName + (count > 0 ? L(" · \(count) 个请求处理中", " · \(count) request\(count == 1 ? "" : "s") in progress") : ""))
+                        .accessibilityLabel(slot.displayName + (count > 0 ? L("，\(count) 个请求处理中", ", \(count) request\(count == 1 ? "" : "s") in progress") : L("，当前无请求", ", no requests")))
                 }
             }
         }.padding(.horizontal, 6)
@@ -212,7 +212,7 @@ struct RoutingLane: View {
             Canvas { context, size in draw(PixelBrush(context: context), size: size, time: tick.date.timeIntervalSinceReferenceDate) }
         }
         .frame(height: Self.height).allowsHitTesting(false)
-        .accessibilityElement().accessibilityLabel(activity.active.isEmpty ? "实时路由，空闲" : "实时路由，\(activity.active.count) 个请求处理中")
+        .accessibilityElement().accessibilityLabel(activity.active.isEmpty ? L("实时路由，空闲", "Live routing, idle") : L("实时路由，\(activity.active.count) 个请求处理中", "Live routing, \(activity.active.count) request\(activity.active.count == 1 ? "" : "s") in progress"))
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { notification in
             if let panel = notification.object as? DesktopPanel, panel.frameAutosaveName == "CodexEmbeddedWidget" {
                 visible = panel.isVisible && panel.occlusionState.contains(.visible)
@@ -254,8 +254,8 @@ struct RoutingHealthDots: View {
     var body: some View {
         let activity = store.routingActivity, ready = store.gatewayReady
         HStack(spacing: 8) {
-            dot("路由", state: ready ? activity.lastRouted : nil, help: routedHelp(activity, ready: ready))
-            dot("缓存", state: ready ? activity.lastCache.map { $0.hit ? true : nil } ?? nil : nil, help: cacheHelp(activity, ready: ready))
+            dot(L("路由", "Routing"), state: ready ? activity.lastRouted : nil, help: routedHelp(activity, ready: ready))
+            dot(L("缓存", "Cache"), state: ready ? activity.lastCache.map { $0.hit ? true : nil } ?? nil : nil, help: cacheHelp(activity, ready: ready))
         }.font(.system(size: 9, weight: .semibold))
     }
     private func dot(_ label: String, state: Bool?, help: String) -> some View {
@@ -265,20 +265,20 @@ struct RoutingHealthDots: View {
                 .overlay(Circle().stroke(state == nil ? Color.secondary.opacity(0.6) : .clear, lineWidth: 1))
                 .frame(width: 6, height: 6)
             Text(label)
-        }.help(help).accessibilityElement(children: .ignore).accessibilityLabel(label + "，" + help)
+        }.help(help).accessibilityElement(children: .ignore).accessibilityLabel(label + L("，", ", ") + help)
     }
     private func routedHelp(_ activity: RoutingActivity, ready: Bool) -> String {
-        guard ready else { return "网关未就绪" }
-        let name = activity.lastAccount.flatMap { store.slot($0)?.displayName } ?? "账号"
+        guard ready else { return L("网关未就绪", "Gateway not ready") }
+        let name = activity.lastAccount.flatMap { store.slot($0)?.displayName } ?? L("账号", "Account")
         switch activity.lastRouted {
-        case true?: return "最近一次请求已由 \(name) 完成"
-        case false?: return "最近一次请求失败或被拒"
-        case nil: return "还没有经过网关的请求"
+        case true?: return L("最近一次请求已由 \(name) 完成", "Last request served by \(name)")
+        case false?: return L("最近一次请求失败或被拒", "Last request failed or was refused")
+        case nil: return L("还没有经过网关的请求", "No requests through the gateway yet")
         }
     }
     private func cacheHelp(_ activity: RoutingActivity, ready: Bool) -> String {
-        guard ready, let cache = activity.lastCache else { return "还没有可统计的回复" }
-        guard cache.hit else { return "最近一次回复未命中 prompt cache" }
-        return "最近一次回复命中 prompt cache：\(cache.cached.formatted()) / \(cache.input.formatted()) token（\(cache.percent)%）"
+        guard ready, let cache = activity.lastCache else { return L("还没有可统计的回复", "No replies to count yet") }
+        guard cache.hit else { return L("最近一次回复未命中 prompt cache", "Last reply missed the prompt cache") }
+        return L("最近一次回复命中 prompt cache：\(cache.cached.formatted()) / \(cache.input.formatted()) token（\(cache.percent)%）", "Last reply hit the prompt cache: \(cache.cached.formatted()) / \(cache.input.formatted()) tokens (\(cache.percent)%)")
     }
 }

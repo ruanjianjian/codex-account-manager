@@ -37,7 +37,7 @@ public enum ResetJudge {
         - possible_reset: mentions a reset, but it is unclear whether limits reset
         - none: anything else (jokes, product news, replies, hypotheticals, questions)
         reset_at: the reset time in ISO 8601 UTC when the post states or implies one, else null.
-        note: one short Chinese sentence (at most 40 characters) telling a user what this means for their quota; empty for none.
+        note: \(L10n.chinese ? "one short Chinese sentence (at most 40 characters)" : "one short English sentence (at most 90 characters)") telling a user what this means for their quota; empty for none.
         Do not run commands. Reply with the JSON only.
         """
     }
@@ -45,7 +45,7 @@ public enum ResetJudge {
     /// A verdict from the model's last message, or nil when it is not one of the known kinds.
     public static func parse(_ data: Data) -> Verdict? {
         guard let value = try? JSONDecoder().decode(Verdict.self, from: data), kinds.contains(value.kind) else { return nil }
-        let note = String(value.note.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        let note = String(value.note.trimmingCharacters(in: .whitespacesAndNewlines).prefix(L10n.chinese ? 60 : 120))
         return Verdict(kind: value.kind, reset_at: value.reset_at.flatMap { ResetFeed.date($0) == nil ? nil : $0 }, note: note)
     }
 }

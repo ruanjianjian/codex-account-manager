@@ -91,12 +91,12 @@ public enum PersonalXError: LocalizedError {
     case loginRequired, wrongPage, noPosts, unavailable, busy, storage
     public var errorDescription: String? {
         switch self {
-        case .loginRequired: return "需要登录个人 X；请打开 X 登录窗口完成验证。"
-        case .wrongPage: return "请在 X 窗口打开 Tibo 主页，再测试读取。"
-        case .noPosts: return "没有读到 Tibo 的有效帖子。可能仍在加载、被限流或页面结构已变化。"
-        case .unavailable: return "X 页面加载失败，稍后重试；账号额度同步继续。"
-        case .busy: return "X 登录窗口正在使用，后台检查暂缓。"
-        case .storage: return "X 监控记录无法保存，已暂停监控，避免丢失去重记录。"
+        case .loginRequired: return L("需要登录个人 X；请打开 X 登录窗口完成验证。", "Sign in to your X account: open the X sign-in window to finish.")
+        case .wrongPage: return L("请在 X 窗口打开 Tibo 主页，再测试读取。", "Open Tibo's profile in the X window, then test reading again.")
+        case .noPosts: return L("没有读到 Tibo 的有效帖子。可能仍在加载、被限流或页面结构已变化。", "Could not read Tibo's posts. The page may still be loading, rate-limited or changed.")
+        case .unavailable: return L("X 页面加载失败，稍后重试；账号额度同步继续。", "The X page failed to load; retrying later. Quota sync goes on.")
+        case .busy: return L("X 登录窗口正在使用，后台检查暂缓。", "The X sign-in window is in use; background checks are on hold.")
+        case .storage: return L("X 监控记录无法保存，已暂停监控，避免丢失去重记录。", "Could not save the X watch history, so watching is paused to avoid losing it.")
         }
     }
 }

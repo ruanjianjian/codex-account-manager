@@ -68,32 +68,32 @@ struct EmbeddedWidgetView: View {
             Spacer(minLength: 8)
             Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).allowsHitTesting(false)
             Button { store.refreshAll() } label: { Image(systemName: "arrow.clockwise") }
-                .disabled(store.isBusy || store.preview).help("刷新所有账号").accessibilityLabel("刷新组件额度")
+                .disabled(store.isBusy || store.preview).help(L("刷新所有账号", "Refresh all accounts")).accessibilityLabel(L("刷新组件额度", "Refresh widget quotas"))
             Button { present(.settings) } label: { Image(systemName: "slider.horizontal.3") }
-                .help("设置").accessibilityLabel("打开设置")
+                .help(L("设置", "Settings")).accessibilityLabel(L("打开设置", "Open Settings"))
         }.buttonStyle(.plain).font(.system(size: 12)).frame(height: 20)
     }
     private var status: String {
-        guard store.gatewayEnabled else { return "\(store.connectedCount)/\(accounts.count) 已连接" }
-        guard store.gatewayReady else { return "等待网关" }
+        guard store.gatewayEnabled else { return L("\(store.connectedCount)/\(accounts.count) 已连接", "\(store.connectedCount)/\(accounts.count) connected") }
+        guard store.gatewayReady else { return L("等待网关", "Waiting for the gateway") }
         let busy = store.routingActivity.active.count
-        if busy > 0 { return "\(busy) 个请求中" }
-        return store.gatewayPreferred.isEmpty ? "最早重置优先" : "优先 " + (store.slot(store.gatewayPreferred)?.displayName ?? "指定账号")
+        if busy > 0 { return L("\(busy) 个请求中", "\(busy) request\(busy == 1 ? "" : "s") running") }
+        return store.gatewayPreferred.isEmpty ? L("最早重置优先", "Soonest reset first") : L("优先 ", "Prefer ") + (store.slot(store.gatewayPreferred)?.displayName ?? L("指定账号", "chosen account"))
     }
     @ViewBuilder private var footer: some View {
         if let next = spentUntil {
-            Text("额度都用完了 · \(next.name) \(Mascot.comesBack(next.backAt, now: store.now))")
+            Text(L("额度都用完了 · \(next.name) \(Mascot.comesBack(next.backAt, now: store.now))", "Every account is out · \(next.name) \(Mascot.comesBack(next.backAt, now: store.now))"))
                 .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).allowsHitTesting(false)
         } else if let alert = store.resetAlert {
             Link(destination: alert.url) {
                 Label(alert.text, systemImage: "bolt.fill").font(.system(size: 10, weight: .semibold)).lineLimit(1)
-            }.foregroundStyle(orange).help("打开 Tibo 原帖")
+            }.foregroundStyle(orange).help(L("打开 Tibo 原帖", "Open Tibo's post"))
         } else if !store.gatewayEnabled && store.routingSetup != .ready && !store.preview {
             Button { present(.settings) } label: {
-                Text("自动路由还差 \(store.routingSetup.remaining) 步 ›").font(.system(size: 10, weight: .semibold))
-            }.buttonStyle(.plain).foregroundStyle(Color(red: 0, green: 0.46, blue: 0.53)).help("打开设置完成自动路由")
+                Text(L("自动路由还差 \(store.routingSetup.remaining) 步 ›", "Auto routing: \(store.routingSetup.remaining) step\(store.routingSetup.remaining == 1 ? "" : "s") left ›")).font(.system(size: 10, weight: .semibold))
+            }.buttonStyle(.plain).foregroundStyle(Color(red: 0, green: 0.46, blue: 0.53)).help(L("打开设置完成自动路由", "Open Settings to finish auto routing"))
         } else {
-            Text(store.gatewayEnabled ? "用完自动跳到下一块" : "自动路由已关闭").font(.system(size: 10)).foregroundStyle(.secondary).allowsHitTesting(false)
+            Text(store.gatewayEnabled ? L("用完自动跳到下一块", "Hops to the next one when it runs out") : L("自动路由已关闭", "Auto routing is off")).font(.system(size: 10)).foregroundStyle(.secondary).allowsHitTesting(false)
         }
     }
 
@@ -150,15 +150,15 @@ struct EmbeddedWidgetView: View {
             let weight: Font.Weight = active ? .semibold : .regular
             Text(text).font(.system(size: 11, weight: weight)).monospacedDigit().lineLimit(1).foregroundStyle(ink).allowsHitTesting(false)
         } else {
-            Button("＋ 连接") { store.connectOrContinue(slot.id) }.buttonStyle(.plain)
+            Button(L("＋ 连接", "＋ Connect")) { store.connectOrContinue(slot.id) }.buttonStyle(.plain)
                 .font(.system(size: 11, weight: .medium)).disabled(!store.canOpenConnection(slot.id))
         }
     }
     private func spokenLabel(_ slot: AccountSlot, left: Double?, reset: Date?, active: Bool, spent: Bool) -> String {
         var parts = [slot.displayName]
-        if active { parts.append("正在用") }
-        if let left { parts.append(spent ? "额度用完，" + Mascot.comesBack(reset, now: store.now) : "余量 \(Int(left))%") } else { parts.append("未连接") }
-        return parts.joined(separator: "，")
+        if active { parts.append(L("正在用", "in use")) }
+        if let left { parts.append(spent ? L("额度用完，", "out of quota, ") + Mascot.comesBack(reset, now: store.now) : L("余量 \(Int(left))%", "\(Int(left))% left")) } else { parts.append(L("未连接", "not connected")) }
+        return parts.joined(separator: L("，", ", "))
     }
 }
 

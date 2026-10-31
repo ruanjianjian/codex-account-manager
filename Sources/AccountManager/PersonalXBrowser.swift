@@ -137,12 +137,12 @@ struct PersonalXLoginView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Tibo 重置提醒").font(.headline)
-                Text(store.personalX.enabled ? store.personalXCaption : (store.personalXTesting ? "正在读取主页…" : "用邮箱或用户名登录 X，登录后自动开始监控"))
+                Text(L("Tibo 重置提醒", "Tibo reset alerts")).font(.headline)
+                Text(store.personalX.enabled ? store.personalXCaption : (store.personalXTesting ? L("正在读取主页…", "Reading the profile…") : L("用邮箱或用户名登录 X，登录后自动开始监控", "Sign in to X with your email or username; watching starts automatically")))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
-                if store.personalX.enabled { Button("断开 X") { store.disablePersonalX() }.disabled(store.personalXTesting) }
-                Button("完成", action: onClose)
+                if store.personalX.enabled { Button(L("断开 X", "Disconnect X")) { store.disablePersonalX() }.disabled(store.personalXTesting) }
+                Button(L("完成", "Done"), action: onClose)
             }.padding(.horizontal, 16).padding(.top, 12)
             if !store.personalX.enabled, let error = store.personalX.lastError {
                 Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)

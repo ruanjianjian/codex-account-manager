@@ -128,11 +128,11 @@ struct DangoWelcome: View {
     var body: some View {
         VStack(spacing: 10) {
             LiveDango(mood: .hello).frame(width: 46, height: 46)
-            Text("嗨，先连上你的 Codex 账号").font(.system(size: 13, weight: .medium))
+            Text(L("嗨，先连上你的 Codex 账号", "Hi! Connect your Codex account first")).font(.system(size: 13, weight: .medium))
             Button(action: add) {
-                Text("连接").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                Text(L("连接", "Connect")).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 16).padding(.vertical, 5).background(Color(white: 0.12), in: Capsule())
-            }.buttonStyle(.plain).accessibilityLabel("连接第一个 Codex 账号")
+            }.buttonStyle(.plain).accessibilityLabel(L("连接第一个 Codex 账号", "Connect your first Codex account"))
         }
     }
 }

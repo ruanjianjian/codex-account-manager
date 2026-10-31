@@ -2,6 +2,7 @@ import XCTest
 @testable import AccountCore
 
 final class ModelsTests: XCTestCase {
+    override func setUp() { L10n.choice = .zh } // these check the Chinese wording
     func testArbitraryAccountCountAndEmptyStateSurviveMigration() throws {
         XCTAssertTrue(try SavedState().migrated().accounts.isEmpty)
         let slots = (1...30).map { AccountSlot(id: "account-test-\($0)", name: "Slot \($0)", chromeProfile: "Default") }

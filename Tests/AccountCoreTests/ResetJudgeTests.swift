@@ -2,6 +2,7 @@ import XCTest
 @testable import AccountCore
 
 final class ResetJudgeTests: XCTestCase {
+    override func setUp() { L10n.choice = .zh } // these check the Chinese wording
     let now = Date(timeIntervalSince1970: 1_793_340_000)
     func post(_ id: String, _ text: String, age: Double = 30) -> XVisiblePost {
         XVisiblePost(url: "https://x.com/thsottiaux/status/\(id)", text: text, publishedAt: ISO8601DateFormatter().string(from: now.addingTimeInterval(age)), truncated: false)
@@ -46,6 +47,7 @@ final class ResetJudgeTests: XCTestCase {
 }
 
 final class QuotaResetTests: XCTestCase {
+    override func setUp() { L10n.choice = .zh } // these check the Chinese wording
     // The weekly window decides, not the 5-hour one that resets all the time.
     func testQuotaResetIsTheLongestWindowsReset() {
         let windows = [QuotaWindow(usedPercent: 10, windowDurationMins: 300, resetsAt: 1_000), QuotaWindow(usedPercent: 40, windowDurationMins: 10_080, resetsAt: 500_000)]

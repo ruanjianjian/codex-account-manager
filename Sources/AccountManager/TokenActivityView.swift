@@ -23,9 +23,9 @@ struct TokenBars: View {
                     }.frame(height: height)
                     if days.count <= 7 { Text(String(day.id.suffix(5))).font(.system(size: 9)).foregroundStyle(.secondary) }
                 }.frame(maxWidth: .infinity)
-                    .help("\(day.id) · \(day.tokens.map { $0.formatted() + " tokens" } ?? "暂无数据") · \(day.reportedAccounts)/\(day.expectedAccounts) 个账号")
+                    .help(L("\(day.id) · \(day.tokens.map { $0.formatted() + " tokens" } ?? "暂无数据") · \(day.reportedAccounts)/\(day.expectedAccounts) 个账号", "\(day.id) · \(day.tokens.map { $0.formatted() + " tokens" } ?? "no data") · \(day.reportedAccounts)/\(day.expectedAccounts) accounts"))
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(day.id) \(day.tokens.map { $0.formatted() + " tokens" } ?? "暂无数据")，\(day.reportedAccounts)/\(day.expectedAccounts) 个账号")
+                    .accessibilityLabel(L("\(day.id) \(day.tokens.map { $0.formatted() + " tokens" } ?? "暂无数据")，\(day.reportedAccounts)/\(day.expectedAccounts) 个账号", "\(day.id) \(day.tokens.map { $0.formatted() + " tokens" } ?? "no data"), \(day.reportedAccounts)/\(day.expectedAccounts) accounts"))
             }
         }
     }
@@ -42,15 +42,15 @@ struct TokenActivityMini: View {
         let shown = min(weeksAgo ?? 0, weeks.count - 1)
         VStack(spacing: 7) {
             HStack(spacing: 8) {
-                Text("TOKEN 活动 · " + TokenActivity.weekTitle(weeks[weeks.count - 1 - shown], weeksAgo: shown)).font(.system(size: 10, weight: .bold))
+                Text(L("TOKEN 活动 · ", "TOKEN ACTIVITY · ") + TokenActivity.weekTitle(weeks[weeks.count - 1 - shown], weeksAgo: shown)).font(.system(size: 10, weight: .bold))
                 Spacer()
                 Group {
                     Button { show(shown + 1) } label: { Image(systemName: "chevron.left") }
-                        .disabled(shown >= weeks.count - 1).help("上一周").accessibilityLabel("上一周")
+                        .disabled(shown >= weeks.count - 1).help(L("上一周", "Previous week")).accessibilityLabel(L("上一周", "Previous week"))
                     Button { show(shown - 1) } label: { Image(systemName: "chevron.right") }
-                        .disabled(shown == 0).help("下一周").accessibilityLabel("下一周")
+                        .disabled(shown == 0).help(L("下一周", "Next week")).accessibilityLabel(L("下一周", "Next week"))
                 }.font(.system(size: 10, weight: .semibold))
-                Button("查看更多", action: openDetails).font(.system(size: 10))
+                Button(L("查看更多", "More"), action: openDetails).font(.system(size: 10))
             }.buttonStyle(.plain)
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
@@ -64,7 +64,7 @@ struct TokenActivityMini: View {
             HStack {
                 Text(store.usageCaption())
                 Spacer()
-                Text("浅色为部分账号 · — 为缺失")
+                Text(L("浅色为部分账号 · — 为缺失", "Light = some accounts · — = missing"))
             }.font(.system(size: 9)).foregroundStyle(.secondary)
                 .overlay { PageDots(count: weeks.count, current: weeks.count - 1 - shown) }
         }.frame(height: 112)
@@ -92,16 +92,16 @@ struct TokenActivityDetails: View {
         let rows = store.tokenDays(count: days, accountID: account == "all" ? nil : account)
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Token 活动").font(.title2.bold())
+                Text(L("Token 活动", "Token activity")).font(.title2.bold())
                 Spacer()
-                Button("刷新统计") { store.refreshUsage(force: true) }.disabled(!store.usageLoading.isEmpty)
+                Button(L("刷新统计", "Refresh stats")) { store.refreshUsage(force: true) }.disabled(!store.usageLoading.isEmpty)
             }
             HStack {
-                Picker("时间", selection: $days) {
-                    Text("近 7 天").tag(7); Text("近 30 天").tag(30); Text("近 90 天").tag(90); Text("全部返回日期").tag(0)
+                Picker(L("时间", "Period"), selection: $days) {
+                    Text(L("近 7 天", "Last 7 days")).tag(7); Text(L("近 30 天", "Last 30 days")).tag(30); Text(L("近 90 天", "Last 90 days")).tag(90); Text(L("全部返回日期", "All returned days")).tag(0)
                 }
-                Picker("账号", selection: $account) {
-                    Text("全部账号").tag("all")
+                Picker(L("账号", "Account"), selection: $account) {
+                    Text(L("全部账号", "All accounts")).tag("all")
                     ForEach(store.saved.accounts) { Text($0.displayName).tag($0.id) }
                 }
             }
@@ -114,7 +114,7 @@ struct TokenActivityDetails: View {
                 }
                 .frame(height: rows.count <= 7 ? 140 : 108)
             }
-            Text("按官方返回日期汇总；近 N 天以 UTC 日历列出，不改写服务端日期。当天可能尚未结算。浅色为部分账号，缺失不会当作零；包含这些账号在其他电脑上的服务端用量。")
+            Text(L("按官方返回日期汇总；近 N 天以 UTC 日历列出，不改写服务端日期。当天可能尚未结算。浅色为部分账号，缺失不会当作零；包含这些账号在其他电脑上的服务端用量。", "Summed by the dates the service returns; the last N days follow the UTC calendar and server dates are not rewritten. Today may not be settled yet. Light bars mean only some accounts reported; missing days are not counted as zero. Includes these accounts' usage on other computers."))
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             ScrollView {
                 LazyVStack(spacing: 9) {
@@ -122,14 +122,14 @@ struct TokenActivityDetails: View {
                         HStack {
                             Text(day.id).monospacedDigit()
                             Spacer()
-                            Text(day.tokens.map { TokenActivity.compact($0) + " tokens" } ?? "暂无数据").monospacedDigit().help(day.tokens.map { $0.formatted() + " tokens" } ?? "暂无数据")
-                            Text("\(day.reportedAccounts)/\(day.expectedAccounts) 账号").foregroundStyle(.secondary).frame(width: 85, alignment: .trailing)
+                            Text(day.tokens.map { TokenActivity.compact($0) + " tokens" } ?? L("暂无数据", "No data")).monospacedDigit().help(day.tokens.map { $0.formatted() + " tokens" } ?? L("暂无数据", "No data"))
+                            Text(L("\(day.reportedAccounts)/\(day.expectedAccounts) 账号", "\(day.reportedAccounts)/\(day.expectedAccounts) accounts")).foregroundStyle(.secondary).frame(width: 85, alignment: .trailing)
                         }.font(.callout)
                     }
                 }
             }.frame(minHeight: 120, maxHeight: .infinity)
-            if !store.usageErrors.isEmpty { Text("有账号暂时无法更新，当前保留上次成功统计；可稍后重试。").font(.caption).foregroundStyle(.orange) }
-            HStack { Spacer(); Button("完成", action: onClose).keyboardShortcut(.defaultAction) }
+            if !store.usageErrors.isEmpty { Text(L("有账号暂时无法更新，当前保留上次成功统计；可稍后重试。", "Some accounts could not update; showing the last successful stats. Try again later.")).font(.caption).foregroundStyle(.orange) }
+            HStack { Spacer(); Button(L("完成", "Done"), action: onClose).keyboardShortcut(.defaultAction) }
         }.padding(24).frame(minWidth: 520, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
     }
 }
