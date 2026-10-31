@@ -612,6 +612,52 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, reader *bufio.R
 		}
 	}
 }
+
+// eventSink hands each event to the app (stdout) and to the private log, never on the request's own goroutine:
+// when the app stops reading or the log stalls, events are dropped instead of freezing every Codex request
+// (2026-10-31: one event write stalled under the old shared lock for an hour, and no request got past its first event).
+func eventSink(app io.Writer, logPath string) func(event) {
+	toApp, toLog := make(chan event, 512), make(chan event, 512)
+	go func() {
+		out := json.NewEncoder(app)
+		for e := range toApp {
+			out.Encode(e)
+		}
+	}()
+	go func() {
+		for e := range toLog {
+			appendLog(logPath, e)
+		}
+	}()
+	return func(e event) {
+		e.Time = time.Now().UTC().Format(time.RFC3339)
+		select {
+		case toApp <- e:
+		default:
+		}
+		select {
+		case toLog <- e:
+		default:
+		}
+	}
+}
+
+// Bounded private diagnostics: no tokens, prompts, response bodies or tool arguments.
+func appendLog(p string, e event) {
+	if st, err := os.Lstat(p); err == nil {
+		if !st.Mode().IsRegular() {
+			return
+		}
+		if st.Size() > 2<<20 {
+			os.Rename(p, p+".previous")
+		}
+	}
+	if f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+		json.NewEncoder(f).Encode(e)
+		f.Close()
+	}
+}
+
 func main() {
 	path := flag.String("config", "", "private pool configuration")
 	addr := flag.String("listen", "127.0.0.1:18455", "loopback listener")
@@ -626,27 +672,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gateway configuration unavailable")
 		os.Exit(1)
 	}
-	var output sync.Mutex
-	emit := func(e event) {
-		output.Lock()
-		defer output.Unlock()
-		e.Time = time.Now().UTC().Format(time.RFC3339)
-		json.NewEncoder(os.Stdout).Encode(e)
-		// Bounded private diagnostics: no tokens, prompts, response bodies or tool arguments.
-		p := filepath.Join(filepath.Dir(*path), "requests.jsonl")
-		if st, err := os.Lstat(p); err == nil {
-			if !st.Mode().IsRegular() {
-				return
-			}
-			if st.Size() > 2<<20 {
-				os.Rename(p, p+".previous")
-			}
-		}
-		if f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-			json.NewEncoder(f).Encode(e)
-			f.Close()
-		}
-	}
+	emit := eventSink(os.Stdout, filepath.Join(filepath.Dir(*path), "requests.jsonl"))
 	g := newGateway(func() (config, error) { return readConfig(*path) }, upstream, emit)
 	if *desktopAuth != "" {
 		g.native = &nativeAuth{path: *desktopAuth, cache: filepath.Join(filepath.Dir(*path), "client-auth-hashes.json")}
