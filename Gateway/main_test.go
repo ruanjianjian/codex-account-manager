@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -528,5 +529,71 @@ func TestNewConversationsUseTheEarliestReset(t *testing.T) {
 	c.Accounts[1].Reset, c.Preferred = 300, "one"
 	if xs, _ := g.candidates(c, "fresh", false, ""); xs[0].ID != "one" {
 		t.Fatal("chosen account ignored", xs)
+	}
+}
+
+// A reader that stops draining stdout must cost diagnostics, never Codex requests.
+func TestEventsNeverBlockWhenTheAppStopsReading(t *testing.T) {
+	_, stalled := io.Pipe()                                           // nobody ever reads it
+	emit := eventSink(stalled, t.TempDir()+"/missing/requests.jsonl") // the log cannot be created either
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 5000; i++ {
+			emit(event{Kind: "routing"})
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emit blocked behind a stalled reader")
+	}
+}
+
+func TestEventsReachTheAppAndTheLogInOrder(t *testing.T) {
+	r, w := io.Pipe()
+	log := t.TempDir() + "/requests.jsonl"
+	emit := eventSink(w, log)
+	lines := make(chan string, 3)
+	go func() {
+		buf := make([]byte, 4096)
+		var got strings.Builder
+		for got.Len() == 0 || strings.Count(got.String(), "\n") < 3 {
+			n, err := r.Read(buf)
+			if err != nil {
+				return
+			}
+			got.Write(buf[:n])
+		}
+		for _, l := range strings.Split(strings.TrimSpace(got.String()), "\n") {
+			lines <- l
+		}
+	}()
+	for _, kind := range []string{"ready", "routing", "finished"} {
+		emit(event{Kind: kind})
+	}
+	for _, kind := range []string{"ready", "routing", "finished"} {
+		select {
+		case l := <-lines:
+			if !strings.Contains(l, `"kind":"`+kind+`"`) {
+				t.Fatalf("app got %s, want %s", l, kind)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("event never reached the app")
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		data, _ := os.ReadFile(log)
+		if strings.Count(string(data), "\n") == 3 {
+			if !strings.Contains(string(data), `"kind":"finished"`) {
+				t.Fatalf("log: %s", data)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("log has %q", data)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
