@@ -2,7 +2,7 @@
 
 ## English
 
-Tibot is a local-first macOS menu-bar app for multiple Codex accounts. See each account's remaining quota and let a local gateway route Codex chats to an available account. **Requires macOS 14 or later and Apple silicon.** Sign in to Codex desktop before installing. Tibot switches to English automatically on Macs without Chinese anywhere in the preferred language list; you can change the app language in **Settings → Language**.
+Tibot is a local-first macOS menu-bar app for multiple Codex accounts. See each account's remaining quota and let a local gateway route Codex chats to an available account. When an account runs out with 2 days or more to its reset, Tibot uses one of its banked resets (turn this off in **Settings → Resets**). **Requires macOS 14 or later and Apple silicon.** Sign in to Codex desktop before installing. Tibot switches to English automatically on Macs without Chinese anywhere in the preferred language list; you can change the app language in **Settings → Language**.
 
 **Paste this to your agent** (Claude Code, Codex, or similar):
 
@@ -45,7 +45,7 @@ Accounts and settings live in `~/Library/Application Support/CodexAccountsPublic
 
 A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 工具：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
-**测试版 v0.4.20-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+**测试版 v0.4.21-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
 
 ## 一行安装
 
@@ -77,6 +77,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 ## 能做什么
 
 - 无限数量的账号卡片：官方额度窗口、重置时间、banked reset 数量与到期信息。
+- 自动用 banked reset：某个账号额度用完、离重置还有 2 天以上时，自动用掉一次（先用最早到期的那次），记入「最近动态」并通知；同一次用完不会重复消耗。可在「设置 → 重置」关闭。
 - 近7天 token 柱状图，展开查看更长日期；缺失数据保留为未知，不补零。
 - 菜单栏悬停呼出，移出/点击外部收起；可调整大小、置顶、选择两键快捷键。
 - 可把账号卡片嵌入桌面：横排组件默认放在系统桌面小组件右侧、顶部对齐，按住空白处或卡片拖动，被其他窗口覆盖。开启路由时显示像素路由动效。
@@ -113,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 ## 手动安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.20-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.21-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 App 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。装了 Codex 桌面（ChatGPT App）就自带 CLI，本版用其内置 CLI 0.165 验证；旧版 CLI 可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
