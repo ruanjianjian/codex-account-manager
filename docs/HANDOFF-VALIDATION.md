@@ -345,3 +345,22 @@ Tibot 有了英文界面。默认跟随系统：系统语言列表里只要有�
 另：Simon 的一次 reset（4.8 天后到期那次）在装新版之前约 12:23 就已用掉，不是 Tibot 做的。
 
 测完已恢复本机设置：面板不置顶、组件关闭。
+
+## 2026-11-02 号都用完时，Codex 直接显示「额度用完、几点恢复」
+
+用户另一台 Mac（0.4.19）报 `503 Service Unavailable: No available account. Refresh or reconnect accounts in Codex Accounts.`（远程压缩任务）。本机 11-02 07:37 也出现过：同一会话 24 秒里被拒 30 次，期间上游没有任何拒绝；当时四个号额度都是 0。所以不是路由选错号，而是网关在没号可用时回了 503：Codex 当成服务器故障重试 5 轮、约 30 次，最后显示一条让人去「重新连接账号」的错误提示（还是旧名字）。
+
+改法：
+- 网关说明原因。所有登录有效的号都没额度（或刚被上游以额度为由拒绝）时，回 Codex 认得的 `429 usage_limit_reached`，带最早那个号的 `resets_at`。令牌全过期回「登录已过期」；号只是被上游错误暂停时回 503 加 `Retry-After`。提示里的「Codex Accounts」改为 Tibot。
+- 顺手修了一个隐患：号被上游以额度为由拒绝后会被冷却到它的重置时间，期间即使 Tibot 用 banked reset 补满了，网关也不再用它。现在被拒时记下这个号的重置时间，Tibot 报告的重置时间一变（额度提前回来了），立即解除冷却。
+- Tibot 的路由说明对应四种新原因。
+
+| 测试需求点 | 是否通过 | 证据摘要 |
+|---|---|---|
+| 号都用完 | 通过 | `TestEveryAccountSpentIsAUsageLimit`：429 + 最早重置时间 |
+| 上游都拒 | 通过 | `TestEveryAccountRefusedForItsLimitIsAUsageLimit`：两个号都 429 → 回 429 带服务器给的最早重置时间；第二次请求不再打上游 |
+| 过期 / 暂停 | 通过 | `TestExpiredLoginsAndUpstreamPausesSaySo`：令牌全过期 → 503 logins_expired；一个用完、一个 5xx 暂停 → 503 accounts_cooling + Retry-After |
+| 补满后立即可用 | 通过 | `TestAnAccountRefilledAfterItsLimitIsUsedAgain`；去掉修复后该测试失败 |
+| 真实 Codex（新网关） | 通过 | 隔离的 CODEX_HOME + 独立端口网关、两个假号额度全用完：Codex 显示「You've hit your usage limit. Try again at 3:50 PM.」，网关只收到 1 次请求，2 秒结束 |
+| 真实 Codex（旧网关对照） | 复现原问题 | 同样场景：25 秒内 30 次重试（Reconnecting… 5/5），最后报出与用户截图相同的 503 |
+| 全部单测 | 通过 | Go `-race` 全过；Swift 109 项（1 项原有跳过） |

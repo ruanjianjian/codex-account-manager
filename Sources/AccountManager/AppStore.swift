@@ -243,6 +243,12 @@ enum SlotStatus: Equatable {
         case "sealed_owner_unavailable": return L("会话接着 \(name) 服务器上保存的回复，只能用它；它暂不可用，请等额度恢复或新开会话", "This chat continues a reply stored on \(name)'s server, so only that account can serve it. It is unavailable now; wait for its quota or start a new chat")
         case "sealed_owner_unknown": return L("会话接着服务器上保存的回复，原账号未知，网关未换号转发；请新开会话", "This chat continues a reply stored on the server and its account is unknown, so the gateway did not switch; start a new chat")
         case "no_available_account", "all_accounts_declined": return L("没有可用账号；刷新账号或等待额度重置", "No account available; refresh accounts or wait for a reset")
+        case "usage_limit":
+            guard let next = Mascot.nextBack(mascotAccounts) else { return L("账号额度都用完了", "Every account is out of quota") }
+            return L("额度都用完了，", "Every account is out of quota; ") + "\(next.name) \(Mascot.comesBack(next.backAt, now: now))"
+        case "logins_expired": return L("所有账号的登录都已过期；Tibot 同步时会自动续上，仍不行请重新连接", "Every account's login has expired; Tibot renews logins as it syncs. Reconnect if this persists")
+        case "accounts_cooling": return L("账号刚被上游拒绝，稍等片刻自动重试", "Accounts are pausing after upstream errors; retrying shortly")
+        case "no_accounts": return L("还没有连接账号", "No account connected yet")
         case "unsupported_route": return L("Codex 调用了网关尚未支持的接口，已记录到诊断日志", "Codex called an endpoint the gateway does not support yet; logged for diagnostics")
         default: return nil
         }
