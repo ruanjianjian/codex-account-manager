@@ -145,8 +145,11 @@ struct GeneralSettings: View {
                         row(L("自动更新", "Auto update")) { switchToggle(Binding(get: { store.autoUpdate }, set: store.setAutoUpdate)) }
                         if store.autoUpdate && !store.updateCaption.isEmpty { note(store.updateCaption).padding(.bottom, 8) }
                     }
-                    caption(L("重置提醒", "Reset alerts"))
+                    caption(L("重置", "Resets"))
                     card {
+                        row(L("自动用 banked reset", "Use banked resets")) { switchToggle(Binding(get: { store.autoBankedReset }, set: store.setAutoBankedReset)) }
+                        note(L("账号额度用完、离重置还有 2 天以上时，自动用掉一次。", "When an account runs out with 2 days or more to its reset, use one.")).padding(.bottom, 8)
+                        Divider()
                         row(L("Tibo 重置提醒", "Tibo reset alerts")) { switchToggle(Binding(get: { store.resetMonitor.enabled }, set: store.setResetMonitoring)) }
                         Divider()
                         row(L("用 Codex 判断公告", "Judge posts with Codex")) { switchToggle(Binding(get: { store.resetUsesModel }, set: store.setResetUsesModel)) }
