@@ -1,8 +1,8 @@
 import CryptoKit
 import Foundation
 
-/// When Tibot spends a banked reset by itself: an account has used up a window whose reset is still
-/// two days or more away. One credit at a time, the one that expires first.
+/// When Tibot spends a banked reset by itself: only when no account has quota left, and then once, on the
+/// account that would wait longest, if its reset is still two days or more away. It uses the credit that expires first.
 public enum BankedResetRule {
     public static let minimumWait: TimeInterval = 48 * 3600
     public struct Plan: Equatable {
@@ -11,6 +11,17 @@ public enum BankedResetRule {
         public var window: QuotaWindow
         public var idempotencyKey: String
         public var creditsLeft: Int
+    }
+    public static func pick(_ accounts: [(id: String, rates: RateResponse?)], now: Date = Date()) -> (id: String, plan: Plan)? {
+        // An account without a reading may still have quota. A reset being redeemed may not show yet.
+        guard !accounts.isEmpty, !accounts.contains(where: { hasQuota($0.rates, now: now) }),
+              !accounts.contains(where: { $0.rates?.rateLimitResetCredits?.credits?.contains { $0.status == "redeeming" } == true }) else { return nil }
+        return accounts.compactMap { account in account.rates.flatMap { plan(accountID: account.id, rates: $0, now: now) }.map { (account.id, $0) } }
+            .max { ($0.1.window.resetsAt ?? 0) < ($1.1.window.resetsAt ?? 0) }
+    }
+    static func hasQuota(_ rates: RateResponse?, now: Date) -> Bool {
+        guard let rates else { return true }
+        return !rates.windows.contains { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
     }
     public static func plan(accountID: String, rates: RateResponse, now: Date = Date()) -> Plan? {
         let summary = rates.rateLimitResetCredits

@@ -3,10 +3,11 @@ import XCTest
 
 final class BankedResetTests: XCTestCase {
     let now = Date(timeIntervalSince1970: 1_800_000_000)
-    private func rates(used: Double, hoursLeft: Double, credits: String = #"[{"id":"late","status":"available","expiresAt":EXP2},{"id":"soon","status":"available","expiresAt":EXP1}]"#) throws -> RateResponse {
+    private func rates(used: Double, hoursLeft: Double, shortUsed: Double = 100, credits: String = #"[{"id":"late","status":"available","expiresAt":EXP2},{"id":"soon","status":"available","expiresAt":EXP1}]"#) throws -> RateResponse {
         let t = now.timeIntervalSince1970
-        let json = #"{"accountId":"acc","rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":USED,"windowDurationMins":10080,"resetsAt":RESET},"secondary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":SHORT}}},"rateLimitResetCredits":{"availableCount":2,"credits":CREDITS}}"#
+        let json = #"{"accountId":"acc","rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":USED,"windowDurationMins":10080,"resetsAt":RESET},"secondary":{"usedPercent":SHORTUSED,"windowDurationMins":300,"resetsAt":SHORT}}},"rateLimitResetCredits":{"availableCount":2,"credits":CREDITS}}"#
             .replacingOccurrences(of: "CREDITS", with: credits)
+            .replacingOccurrences(of: "SHORTUSED", with: "\(shortUsed)")
             .replacingOccurrences(of: "USED", with: "\(used)")
             .replacingOccurrences(of: "RESET", with: "\(Int(t + hoursLeft * 3600))")
             .replacingOccurrences(of: "SHORT", with: "\(Int(t + 3600))")
@@ -48,5 +49,22 @@ final class BankedResetTests: XCTestCase {
         XCTAssertNotEqual(BankedResetRule.key("a", 1), BankedResetRule.key("b", 1))
         XCTAssertNotEqual(BankedResetRule.key("a", 1), BankedResetRule.key("a", 2))
         XCTAssertNotNil(UUID(uuidString: first.idempotencyKey))
+    }
+    func testOnlyWhenEveryAccountIsOutAndOnlyOnTheLongestWait() throws {
+        let a = try rates(used: 100, hoursLeft: 51), b = try rates(used: 100, hoursLeft: 60)
+        let picked = try XCTUnwrap(BankedResetRule.pick([("a", a), ("b", b)], now: now))
+        XCTAssertEqual(picked.id, "b")
+        // One account still has quota: nothing is spent.
+        XCTAssertNil(BankedResetRule.pick([("a", a), ("b", b), ("c", try rates(used: 40, hoursLeft: 100, shortUsed: 10))], now: now))
+        // An account with no reading yet may have quota.
+        XCTAssertNil(BankedResetRule.pick([("a", a), ("x", nil)], now: now))
+        // All out, but the only one with two days or more is chosen; under two days everywhere, nothing.
+        XCTAssertEqual(BankedResetRule.pick([("a", a), ("short", try rates(used: 100, hoursLeft: 30))], now: now)?.id, "a")
+        XCTAssertNil(BankedResetRule.pick([("short", try rates(used: 100, hoursLeft: 30))], now: now))
+        XCTAssertNil(BankedResetRule.pick([], now: now))
+    }
+    func testNoSecondAccountWhileAResetIsStillRedeeming() throws {
+        let redeeming = try rates(used: 100, hoursLeft: 60, credits: #"[{"id":"x","status":"redeeming"}]"#)
+        XCTAssertNil(BankedResetRule.pick([("a", try rates(used: 100, hoursLeft: 51)), ("b", redeeming)], now: now))
     }
 }

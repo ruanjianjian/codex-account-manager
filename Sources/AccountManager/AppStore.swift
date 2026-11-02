@@ -523,7 +523,7 @@ enum SlotStatus: Equatable {
             nextPoll[id] = Date().addingTimeInterval(60)
             if old == nil { record(L("\(saved.accounts[i].displayName) 已连接，登录状态已保存。", "\(saved.accounts[i].displayName) connected; the login is saved.")) }
             evaluateReminders(id: id, previous: old, current: snapshot)
-            Task { await spendBankedResetIfWorthIt(id) }
+            Task { await spendBankedResetIfAllOut() }
             resetMonitor.acknowledge(id, syncStartedAt: syncStartedAt)
             saveResetMonitor()
             persist()
@@ -992,24 +992,29 @@ enum SlotStatus: Equatable {
     }
     var autoBankedReset: Bool { UserDefaults.standard.object(forKey: "reset.autoBanked") as? Bool ?? true }
     func setAutoBankedReset(_ on: Bool) { objectWillChange.send(); UserDefaults.standard.set(on, forKey: "reset.autoBanked") }
-    private var bankedResetTried: [String: Date] = [:]
-    /// A used-up account that would wait two days or more for its reset gets one banked reset.
-    private func spendBankedResetIfWorthIt(_ id: String) async {
-        guard autoBankedReset, !preview, persistenceEnabled, launchingDesktop.isEmpty, loginSlotID != id,
-              let slot = slot(id), let rates = slot.snapshot?.rates,
-              let plan = BankedResetRule.plan(accountID: id, rates: rates), let reset = plan.window.resetDate else { return }
+    private var bankedResetTried: Date?
+    /// Every account is out: one banked reset, for the account that would wait longest (two days or more).
+    private func spendBankedResetIfAllOut() async {
+        guard autoBankedReset, !preview, persistenceEnabled, launchingDesktop.isEmpty, loginSlotID == nil else { return }
+        // A failed or just-finished attempt is not followed by another for 15 minutes; a reset can take a poll to show.
+        if let last = bankedResetTried, Date().timeIntervalSince(last) < 900 { return }
+        let usable = saved.accounts.filter { slot in
+            guard slot.expectedAccountID != nil, !collectorRetry.paused.contains(slot.id) else { return false }
+            if case .wrongAccount = status[slot.id] { return false }
+            return true
+        }
+        guard let (id, plan) = BankedResetRule.pick(usable.map { ($0.id, $0.snapshot?.rates) }),
+              let slot = slot(id), let reset = plan.window.resetDate else { return }
         let key = "banked-\(plan.idempotencyKey)"
         guard !slot.reminderKeys.contains(key) else { return }
-        // A failed attempt is retried with the same key, though not on every one-minute poll.
-        if let last = bankedResetTried[id], Date().timeIntervalSince(last) < 900 { return }
-        bankedResetTried[id] = Date()
+        bankedResetTried = Date()
         let wait = Presentation.span(until: reset, now: Date()) ?? ""
         var params: [String: Any] = ["idempotencyKey": plan.idempotencyKey]
         if let credit = plan.creditID { params["creditId"] = credit }
         guard let reply = try? await client(id).request("account/rateLimitResetCredit/consume", params: params) else { return }
         switch reply["outcome"] as? String {
         case "reset", "alreadyRedeemed":
-            remind(id, key: key, text: L("\(slot.displayName) 的\(plan.window.label)用完了，离重置还有 \(wait)，已自动用掉 1 次 banked reset（还剩 \(plan.creditsLeft) 次）。", "\(slot.displayName) used up its \(plan.window.label.lowercased()) with \(wait) to go, so Tibot used a banked reset (\(plan.creditsLeft) left)."))
+            remind(id, key: key, text: L("所有账号都没额度了，给 \(slot.displayName) 用了 1 次 banked reset（它本来还要 \(wait) 才重置，还剩 \(plan.creditsLeft) 次）。", "Every account was out, so Tibot used a banked reset on \(slot.displayName) (it had \(wait) to go; \(plan.creditsLeft) left)."))
             await sync(id, force: true)
         case "nothingToReset", "noCredit":
             // Nothing was spent. Do not ask again for this window.
