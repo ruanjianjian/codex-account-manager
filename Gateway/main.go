@@ -71,13 +71,21 @@ type gateway struct {
 	stickyFile string
 	sticky     map[string]binding
 	rest       map[string]time.Time
+	limited    map[string]limit
+}
+
+// An account the server refused for its usage limit. A different quota reset from Tibot afterwards
+// means its quota came back early (a banked reset, a reset for everyone), so it is used again at once.
+type limit struct {
+	until time.Time
+	reset float64
 }
 
 func newGateway(read func() (config, error), base string, emit func(event)) *gateway {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 90 * time.Second
 	tr.Proxy = newSystemProxy().For
-	return &gateway{config: read, base: base, client: &http.Client{Transport: tr, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, emit: emit, sticky: map[string]binding{}, rest: map[string]time.Time{}}
+	return &gateway{config: read, base: base, client: &http.Client{Transport: tr, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, emit: emit, sticky: map[string]binding{}, rest: map[string]time.Time{}, limited: map[string]limit{}}
 }
 
 type requestTraceKey struct{}
@@ -297,7 +305,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reject(409, stuck, owner, "This conversation continues a response stored on account "+owner+", which is unavailable now (quota, cooldown or expired login). Wait for it to recover or start a new conversation.")
 		return
 	case len(candidates) == 0:
-		reject(503, "no_available_account", "", "No available account. Refresh or reconnect accounts in Codex Accounts.")
+		g.refuse(w, r, g.verdict(c, "no_available_account", "No available account. Refresh or reconnect accounts in Tibot."))
 		return
 	}
 	for _, a := range candidates {
@@ -324,7 +332,11 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			res.Body.Close()
 			g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: res.StatusCode, Session: session})
 			if retryable(res.StatusCode) {
-				g.cool(a.ID, retryAt(res.Header, b))
+				until := retryAt(res.Header, b)
+				g.cool(a.ID, until)
+				if res.StatusCode == 429 {
+					g.limit(a, until)
+				}
 				continue
 			}
 			// An account that cannot read this conversation's encrypted history is not at fault; the next one may.
@@ -360,7 +372,81 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	reject(503, "all_accounts_declined", "", "All available accounts declined this request. Refresh accounts or wait for quota reset.")
+	g.refuse(w, r, g.verdict(c, "all_accounts_declined", "All available accounts declined this request. Refresh accounts in Tibot or wait for a quota reset."))
+}
+
+// Why no account can take a request, worded for Codex to show. When every signed-in account is out
+// of quota, or was just refused for its usage limit, the answer is the usage-limit error Codex knows:
+// it shows "You've hit your usage limit. Try again at …" and stops, where a 503 had it retry dozens
+// of times and then print a hint to reconnect accounts that were fine.
+type verdict struct {
+	status int
+	reason string
+	until  time.Time // when the first account comes back (429) or the soonest pause ends (503)
+	msg    string
+}
+
+func (g *gateway) verdict(c config, reason, msg string) verdict {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	signedIn, limited := 0, 0
+	var back, retry time.Time
+	soonest := func(t *time.Time, v time.Time) {
+		if v.After(now) && (t.IsZero() || v.Before(*t)) {
+			*t = v
+		}
+	}
+	for _, a := range c.Accounts {
+		if a.Access == "" || a.Expires <= float64(now.Unix()+30) {
+			continue
+		}
+		signedIn++
+		switch {
+		case g.limited[a.ID].until.After(now):
+			limited++
+			soonest(&back, g.limited[a.ID].until)
+		case !a.Available:
+			limited++
+			soonest(&back, time.Unix(int64(a.Reset), 0))
+		case g.rest[a.ID].After(now):
+			soonest(&retry, g.rest[a.ID])
+		default: // usable, yet it declined this request
+			return verdict{status: 503, reason: reason, msg: msg}
+		}
+	}
+	switch {
+	case len(c.Accounts) == 0:
+		return verdict{status: 503, reason: "no_accounts", msg: "No account is connected to Tibot. Connect one in Tibot."}
+	case signedIn == 0:
+		return verdict{status: 503, reason: "logins_expired", msg: "Every account's login has expired. Open Tibot so it can renew them, or reconnect the accounts."}
+	case limited == signedIn:
+		v := verdict{status: 429, reason: "usage_limit", until: back, msg: "Every account in Tibot has hit its usage limit."}
+		if !back.IsZero() {
+			v.msg += " The first one comes back at " + back.Local().Format("Jan 2 15:04") + "."
+		}
+		return v
+	}
+	return verdict{status: 503, reason: "accounts_cooling", until: retry, msg: "Every account is pausing after an upstream error; retry in a moment."}
+}
+
+func (g *gateway) refuse(w http.ResponseWriter, r *http.Request, v verdict) {
+	g.emitRequest(r, event{Kind: "rejected", Status: v.status, Reason: v.reason})
+	if v.status != 429 {
+		if !v.until.IsZero() {
+			w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(v.until).Seconds())+1))
+		}
+		fail(w, v.status, v.msg)
+		return
+	}
+	body := map[string]any{"type": "usage_limit_reached", "message": v.msg}
+	if !v.until.IsZero() {
+		body["resets_at"] = v.until.Unix()
+		body["resets_in_seconds"] = int64(time.Until(v.until).Seconds())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(429)
+	json.NewEncoder(w).Encode(map[string]any{"error": body})
 }
 
 // The Codex backend streams SSE without a Content-Type header, so the first bytes decide too.
@@ -420,6 +506,10 @@ func (g *gateway) candidates(c config, session string, pinned bool, guess string
 	}
 	var out []account
 	for _, a := range c.Accounts {
+		if l, ok := g.limited[a.ID]; ok && a.Available && a.Reset != l.reset {
+			delete(g.limited, a.ID)
+			delete(g.rest, a.ID)
+		}
 		if a.Access == "" || a.Expires <= float64(now.Unix()+30) || g.rest[a.ID].After(now) {
 			continue
 		}
@@ -491,6 +581,11 @@ func (g *gateway) cool(id string, until time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.rest[id] = until
+}
+func (g *gateway) limit(a account, until time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.limited[a.ID] = limit{until: until, reset: a.Reset}
 }
 func (g *gateway) request(r *http.Request, path string, body []byte, a account) (*http.Request, error) {
 	u := g.base + path
