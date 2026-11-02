@@ -148,7 +148,7 @@ struct GeneralSettings: View {
                     caption(L("重置", "Resets"))
                     card {
                         row(L("自动用 banked reset", "Use banked resets")) { switchToggle(Binding(get: { store.autoBankedReset }, set: store.setAutoBankedReset)) }
-                        note(L("账号额度用完、离重置还有 2 天以上时，自动用掉一次。", "When an account runs out with 2 days or more to its reset, use one.")).padding(.bottom, 8)
+                        note(L("所有账号都没额度时，给离重置最远（还要 2 天以上）的一个账号用一次。", "When every account is out, use one on the account with the longest wait, if it is 2 days or more.")).padding(.bottom, 8)
                         Divider()
                         row(L("Tibo 重置提醒", "Tibo reset alerts")) { switchToggle(Binding(get: { store.resetMonitor.enabled }, set: store.setResetMonitoring)) }
                         Divider()
