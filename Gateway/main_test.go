@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"github.com/klauspost/compress/zstd"
 	"io"
@@ -358,7 +359,7 @@ func TestRejectionsAreRecordedWithReason(t *testing.T) {
 	c.Accounts[0].Available, c.Accounts[1].Available = false, false
 	var events []event
 	g := newGateway(func() (config, error) { return c, nil }, "http://127.0.0.1:1", func(e event) { events = append(events, e) })
-	if w := ask(g, `{"input":"hi"}`); w.Code != 503 {
+	if w := ask(g, `{"input":"hi"}`); w.Code != 429 {
 		t.Fatal(w.Code)
 	}
 	g.remember("test-session", "one")
@@ -372,7 +373,7 @@ func TestRejectionsAreRecordedWithReason(t *testing.T) {
 			got = append(got, fmt.Sprintf("%d:%s:%s", e.Status, e.Reason, e.Account))
 		}
 	}
-	if strings.Join(got, ",") != "503:no_available_account:,409:sealed_owner_unavailable:one" {
+	if strings.Join(got, ",") != "429:usage_limit:,409:sealed_owner_unavailable:one" {
 		t.Fatal(got)
 	}
 }
@@ -595,5 +596,114 @@ func TestEventsReachTheAppAndTheLogInOrder(t *testing.T) {
 			t.Fatalf("log has %q", data)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func usageLimit(t *testing.T, w *httptest.ResponseRecorder) (resetsAt int64, msg string) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Type     string `json:"type"`
+			Message  string `json:"message"`
+			ResetsAt int64  `json:"resets_at"`
+		} `json:"error"`
+	}
+	if w.Code != 429 || json.Unmarshal(w.Body.Bytes(), &body) != nil || body.Error.Type != "usage_limit_reached" {
+		t.Fatalf("want Codex's usage-limit error, got %d %s", w.Code, w.Body)
+	}
+	return body.Error.ResetsAt, body.Error.Message
+}
+
+// Every account out of quota is a usage limit Codex shows and stops on, with the first account's reset.
+func TestEveryAccountSpentIsAUsageLimit(t *testing.T) {
+	c := pool()
+	soon, later := time.Now().Add(3*time.Hour).Unix(), time.Now().Add(50*time.Hour).Unix()
+	c.Accounts[0].Available, c.Accounts[0].Reset = false, float64(later)
+	c.Accounts[1].Available, c.Accounts[1].Reset = false, float64(soon)
+	g := newGateway(func() (config, error) { return c, nil }, "http://127.0.0.1:1", func(event) {})
+	at, msg := usageLimit(t, ask(g, `{"input":"hi"}`))
+	if at != soon || !strings.Contains(msg, "comes back at") || strings.Contains(msg, "Codex Accounts") {
+		t.Fatalf("resets_at %d (want %d), message %q", at, soon, msg)
+	}
+}
+
+// Upstream usage-limit refusals on every account end the same way, with the reset the server gave.
+func TestEveryAccountRefusedForItsLimitIsAUsageLimit(t *testing.T) {
+	resets := time.Now().Add(26 * time.Hour).Unix()
+	n := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		w.WriteHeader(429)
+		fmt.Fprintf(w, `{"error":{"type":"usage_limit_reached","resets_at":%d}}`, resets+int64(n))
+	}))
+	defer up.Close()
+	c := pool()
+	g := newGateway(func() (config, error) { return c, nil }, up.URL, func(event) {})
+	if at, _ := usageLimit(t, ask(g, `{"input":"hi"}`)); at != resets+1 || n != 2 {
+		t.Fatalf("resets_at %d after %d upstream calls", at, n)
+	}
+	if at, _ := usageLimit(t, ask(g, `{"input":"again"}`)); at != resets+1 || n != 2 {
+		t.Fatalf("second request: resets_at %d, upstream calls %d", at, n)
+	}
+}
+
+func TestExpiredLoginsAndUpstreamPausesSaySo(t *testing.T) {
+	c := pool()
+	for i := range c.Accounts {
+		c.Accounts[i].Expires = float64(time.Now().Unix() - 60)
+	}
+	var events []event
+	g := newGateway(func() (config, error) { return c, nil }, "http://127.0.0.1:1", func(e event) { events = append(events, e) })
+	if w := ask(g, `{"input":"hi"}`); w.Code != 503 || !strings.Contains(w.Body.String(), "login has expired") {
+		t.Fatalf("expired logins: %d %s", w.Code, w.Body)
+	}
+	c = pool()
+	c.Accounts[0].Available, c.Accounts[0].Reset = false, float64(time.Now().Add(time.Hour).Unix())
+	g = newGateway(func() (config, error) { return c, nil }, "http://127.0.0.1:1", func(e event) { events = append(events, e) })
+	g.cool("two", time.Now().Add(20*time.Second)) // a 5xx pause, not a usage limit
+	w := ask(g, `{"input":"hi"}`)
+	if w.Code != 503 || !strings.Contains(w.Body.String(), "pausing") || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("one spent, one paused: %d %s %v", w.Code, w.Body, w.Header())
+	}
+	var got []string
+	for _, e := range events {
+		if e.Kind == "rejected" {
+			got = append(got, fmt.Sprintf("%d:%s", e.Status, e.Reason))
+		}
+	}
+	if strings.Join(got, ",") != "503:logins_expired,503:accounts_cooling" {
+		t.Fatal(got)
+	}
+}
+
+// Refused for its limit, then refilled by a banked reset: Tibot reports a new reset and it is used again.
+func TestAnAccountRefilledAfterItsLimitIsUsedAgain(t *testing.T) {
+	var limitedOnce sync.Once
+	var seen []string
+	var mu sync.Mutex
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("chatgpt-account-id"))
+		mu.Unlock()
+		refuse := false
+		if r.Header.Get("chatgpt-account-id") == "acct-one" {
+			limitedOnce.Do(func() { refuse = true })
+		}
+		if refuse {
+			w.WriteHeader(429)
+			fmt.Fprintf(w, `{"error":{"type":"usage_limit_reached","resets_at":%d}}`, time.Now().Add(80*time.Hour).Unix())
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	}))
+	defer up.Close()
+	c := pool()
+	c.Accounts[1].Available = false
+	g := newGateway(func() (config, error) { return c, nil }, up.URL, func(event) {})
+	usageLimit(t, ask(g, `{"input":"hi"}`))
+	c.Accounts[0].Reset = float64(time.Now().Add(7 * 24 * time.Hour).Unix()) // banked reset: a new window
+	if w := ask(g, `{"input":"again"}`); w.Code != 200 {
+		t.Fatalf("refilled account still skipped: %d %s (upstream saw %v)", w.Code, w.Body, seen)
 	}
 }
