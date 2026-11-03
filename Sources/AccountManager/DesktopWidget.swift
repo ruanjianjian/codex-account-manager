@@ -99,6 +99,17 @@ struct DesktopWidgetView: View {
                     Button { store.banner = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel(L("关闭提示", "Dismiss"))
                 }.foregroundStyle(.orange)
             }
+            if let move = store.codexLoginSwitch {
+                HStack(spacing: 8) {
+                    Text(L("Codex 登录的 \(move.from.displayName) 没额度了，Codex 会拦住发送，路由收不到。", "Codex is signed in to \(move.from.displayName), which is out, so Codex holds messages back before routing sees them."))
+                        .font(.caption).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button(store.switchingCodexLogin ? L("正在换号…", "Switching…") : L("换到 \(move.to.displayName)", "Switch to \(move.to.displayName)")) {
+                        Task { await store.switchCodexLogin(to: move.to.id) }
+                    }.disabled(store.switchingCodexLogin).controlSize(.small)
+                        .help(L("退出并重开 Codex，让它登录 \(move.to.displayName)", "Quit and reopen Codex signed in to \(move.to.displayName)"))
+                }.foregroundStyle(.orange)
+            }
             ScrollView {
             LazyVGrid(columns: [.init(.flexible(), spacing: 10), .init(.flexible())], spacing: 10) {
                 ForEach(Array(store.saved.accounts.enumerated()), id: \.element.id) { index, slot in
