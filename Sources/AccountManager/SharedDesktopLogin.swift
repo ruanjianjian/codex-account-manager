@@ -3,7 +3,8 @@ import Security
 import AccountCore
 
 /// Reads which account the shared Codex desktop is signed in to, and migrates stored logins
-/// to files. Never rewrites the desktop login: switching is the gateway's job.
+/// to files. Routing changes accounts; the desktop login is rewritten only by the one-click switch
+/// when Codex's own account is out (`AppStore.switchCodexLogin`).
 @MainActor final class SharedDesktopLogin {
     let root: URL
     let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")

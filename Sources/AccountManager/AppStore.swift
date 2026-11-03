@@ -175,7 +175,7 @@ enum SlotStatus: Equatable {
         } else if let lastVersion, lastVersion != updater.current {
             record(L("已从 \(lastVersion) 更新到 \(updater.current)。", "Updated from \(lastVersion) to \(updater.current)."))
         }
-        if sharedDesktop.interruptedSwitch { banner = L("旧版本留下了一次未完成的桌面切换。新版不再改 Codex 登录；如账号不对，请在 Codex 里重新登录。", "An older version left a desktop switch unfinished. This version no longer changes the Codex login; if the account is wrong, sign in again in Codex.") }
+        if sharedDesktop.interruptedSwitch { banner = L("旧版本留下了一次未完成的桌面切换。如 Codex 登录的账号不对，请在 Codex 里重新登录。", "An older version left a desktop switch unfinished. If Codex is signed in to the wrong account, sign in again in Codex.") }
         loadResetMonitor()
         loadPersonalX()
         checkResetAnnouncements()
@@ -355,6 +355,75 @@ enum SlotStatus: Equatable {
         let reset = { (slot: AccountSlot) in slot.snapshot?.rates.windows.quotaReset ?? .infinity }
         return saved.accounts.filter(usable).min { reset($0) < reset($1) }?.id
     }
+    static let codexBundle = "com.openai.codex"
+    @Published var switchingCodexLogin = false
+    /// Codex checks the account it is signed in to before it sends anything, and locks the composer when that
+    /// account is out: routing never sees the message. Then Codex has to sign in to an account with quota left.
+    var codexLoginSwitch: (from: AccountSlot, to: AccountSlot)? {
+        guard gatewayEnabled, usesFileCredentials, !preview, let from = desktopSelection.flatMap({ slot($0.slotID) }) else { return nil }
+        let others = saved.accounts.filter { other in
+            // Every account reads "syncing" for a moment each minute; only a failing one is left out.
+            other.id != from.id && (status[other.id] == .connected || status[other.id] == .checking)
+                && (try? sharedDesktop.fileStore.auth(other.id)).map { FileManager.default.fileExists(atPath: $0.path) } == true
+        }
+        return CodexLoginSwitch.target(desktop: from.snapshot?.rates, others: others.map { ($0.id, $0.snapshot?.rates) }, now: now)
+            .flatMap(slot).map { (from, $0) }
+    }
+    /// The one-click switch: quit Codex, put the outgoing account's newest login back in its own file,
+    /// sign Codex in to `id`, and open Codex again.
+    func switchCodexLogin(to id: String) async {
+        guard !switchingCodexLogin, launchingDesktop.isEmpty, loginSlotID == nil, usesFileCredentials, !preview,
+              let from = desktopSelection, from.slotID != id, let target = slot(id), let expected = target.expectedAccountID,
+              let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.codexBundle) else { return }
+        let running = routingActivity.active.count
+        if running > 0 {
+            let alert = NSAlert(); alert.messageText = L("把 Codex 换到 \(target.displayName)？", "Switch Codex to \(target.displayName)?")
+            alert.informativeText = L("Codex 会退出再打开。现在有 \(running) 个请求在跑，Codex 里的会被打断。", "Codex quits and opens again. \(running) request\(running == 1 ? " is" : "s are") running now; the ones in Codex will be cut off.")
+            alert.addButton(withTitle: L("换号", "Switch")); alert.addButton(withTitle: L("取消", "Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        let outgoing = slot(from.slotID)?.displayName ?? ""
+        switchingCodexLogin = true; launchingDesktop.insert("codex-login")
+        defer { switchingCodexLogin = false; launchingDesktop.remove("codex-login"); refreshAll() }
+        // Tibot's own syncs may renew either login: let them finish, then stop their app servers.
+        let pair: Set<String> = [from.slotID, id]
+        var waited = 0
+        while (!busy.isDisjoint(with: pair) || !usageLoading.isDisjoint(with: pair)) && waited < 40 { try? await Task.sleep(for: .milliseconds(250)); waited += 1 }
+        guard busy.isDisjoint(with: pair), usageLoading.isDisjoint(with: pair) else { banner = L("同步还没结束，稍后再点一次。", "A sync is still running. Try again in a moment."); return }
+        for key in pair { clients[key]?.stop(); clients.removeValue(forKey: key) }
+        guard let incoming = try? sharedDesktop.fileStore.read(id, expected: expected) else {
+            banner = L("读不到 \(target.displayName) 的登录，没换号。请先重新连接它。", "Could not read \(target.displayName)'s login, so nothing changed. Reconnect it first."); return
+        }
+        let apps = NSRunningApplication.runningApplications(withBundleIdentifier: Self.codexBundle)
+        for app in apps { _ = app.terminate() }
+        waited = 0
+        while apps.contains(where: { !$0.isTerminated }) && waited < 80 { try? await Task.sleep(for: .milliseconds(250)); waited += 1 }
+        guard apps.allSatisfy(\.isTerminated) else {
+            banner = L("Codex 没有退出，没换号。如果它在问要不要退出，确认后再点一次。", "Codex did not quit, so nothing changed. If it is asking whether to quit, confirm and click again."); return
+        }
+        // Its app server may save a renewed login on the way out.
+        if !apps.isEmpty { try? await Task.sleep(for: .seconds(1)) }
+        let auth = sharedDesktop.home.appendingPathComponent("auth.json")
+        do {
+            // The desktop file holds the outgoing account's newest login: it goes back to that account's own file first.
+            try sharedDesktop.fileStore.write(DesktopCredential(Data(contentsOf: auth), expected: from.accountID), id: from.slotID)
+            try PrivateAtomicFile.write(incoming.data, to: auth)
+            record(L("Codex 登录从 \(outgoing) 换到了 \(target.displayName)。", "Codex now signs in as \(target.displayName) instead of \(outgoing)."))
+        } catch {
+            banner = L("换号失败，Codex 还是 \(outgoing)。", "The switch failed; Codex is still on \(outgoing).")
+        }
+        if gatewayEnabled { try? updateGatewayPool() }
+        if !apps.isEmpty {
+            let configuration = NSWorkspace.OpenConfiguration(); configuration.activates = true
+            _ = try? await NSWorkspace.shared.openApplication(at: app, configuration: configuration)
+        }
+    }
+    /// Says once per used-up window that Codex itself is locked, and how to get out.
+    private func noticeCodexLoginOut() {
+        guard let move = codexLoginSwitch,
+              let reset = move.from.snapshot?.rates.windows.filter({ ($0.remaining ?? 100) <= 0 }).compactMap(\.resetsAt).max() else { return }
+        remind(move.from.id, key: "codex-login-out-\(Int(reset))", text: L("Codex 登录的 \(move.from.displayName) 没额度了，Codex 会在发出前拦住新消息，路由收不到。在 Tibot 面板点「换到 \(move.to.displayName)」就能继续。", "Codex is signed in to \(move.from.displayName), which is out, so Codex holds new messages back before routing sees them. Click “Switch to \(move.to.displayName)” in the Tibot panel to keep going."))
+    }
     var mascotAccounts: [Mascot.Account] {
         saved.accounts.map { Mascot.Account(id: $0.id, name: $0.displayName, windows: $0.snapshot?.rates.windows ?? []) }
     }
@@ -530,6 +599,7 @@ enum SlotStatus: Equatable {
             if old == nil { record(L("\(saved.accounts[i].displayName) 已连接，登录状态已保存。", "\(saved.accounts[i].displayName) connected; the login is saved.")) }
             evaluateReminders(id: id, previous: old, current: snapshot)
             Task { await spendBankedResetIfAllOut() }
+            noticeCodexLoginOut()
             resetMonitor.acknowledge(id, syncStartedAt: syncStartedAt)
             saveResetMonitor()
             persist()
