@@ -30,6 +30,11 @@ import (
 
 const upstream = "https://chatgpt.com/backend-api/codex"
 
+// Inline screenshots can exceed 32 MiB well before Codex's token-based
+// compaction threshold. Keep transport and decoded bodies bounded, while
+// allowing these histories through both responses and responses/compact.
+const maxRequestBodyBytes = 128 << 20
+
 type account struct {
 	ID        string  `json:"id"`
 	AccountID string  `json:"accountID"`
@@ -223,12 +228,12 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reject(404, "unsupported_route", "", "Unsupported gateway route.")
 		return
 	}
-	compressed := http.MaxBytesReader(w, r.Body, 32<<20)
+	compressed := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	var reader io.Reader = compressed
 	switch strings.ToLower(r.Header.Get("Content-Encoding")) {
 	case "", "identity":
 	case "zstd":
-		decoder, e := zstd.NewReader(compressed, zstd.WithDecoderMaxMemory(64<<20), zstd.WithDecoderConcurrency(1))
+		decoder, e := zstd.NewReader(compressed, zstd.WithDecoderMaxMemory(maxRequestBodyBytes), zstd.WithDecoderConcurrency(1))
 		if e != nil {
 			reject(400, "invalid_body", "", "Invalid compressed request.")
 			return
@@ -247,8 +252,8 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reject(415, "invalid_body", "", "Unsupported request encoding.")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(reader, (32<<20)+1))
-	if len(body) > 32<<20 {
+	body, err := io.ReadAll(io.LimitReader(reader, maxRequestBodyBytes+1))
+	if len(body) > maxRequestBodyBytes {
 		reject(413, "invalid_body", "", "Decoded request too large.")
 		return
 	}
