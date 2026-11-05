@@ -122,7 +122,7 @@ public struct GatewayConfiguration {
 /// turns to it only when no account with more left can take the request. Running an account to empty fails
 /// the turn that hits the limit, and the account Codex is signed in to locks Codex's composer when it is out.
 public enum RoutingReserve {
-    public static let line = 10.0
+    public static let line = 5.0
     public static func low(_ windows: [QuotaWindow], now: Date = Date()) -> Bool {
         windows.contains { ($0.remaining ?? 100) < line && ($0.resetDate ?? .distantFuture) > now }
     }
