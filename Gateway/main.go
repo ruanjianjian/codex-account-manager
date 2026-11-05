@@ -42,6 +42,8 @@ type account struct {
 	Expires   float64 `json:"expires"`
 	Available bool    `json:"available"`
 	Reset     float64 `json:"reset"`
+	// Under Tibot's reserve line: used only when no account with more left can take the request.
+	Low bool `json:"low"`
 }
 type config struct {
 	Key       string           `json:"key"`
@@ -300,7 +302,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if session != "" && sealed {
 		guess = nativeAccount
 	}
-	candidates, stuck := g.candidates(c, session, pinned, guess)
+	candidates, stuck := g.candidates(c, session, pinned, guess, nativeAccount)
 	switch {
 	case stuck == "sealed_owner_unknown":
 		reject(409, stuck, "", "This conversation continues a response stored on an unknown account; it was not sent to another account. Start a new conversation.")
@@ -493,8 +495,9 @@ func retryAt(h http.Header, b []byte) time.Time {
 	return time.Now().Add(time.Duration(seconds * float64(time.Second)))
 }
 
-// Returns the accounts to try in order, or why a pinned conversation cannot be served.
-func (g *gateway) candidates(c config, session string, pinned bool, guess string) ([]account, string) {
+// Returns the accounts to try in order, or why a pinned conversation cannot be served. native is the
+// account whose login the client presented.
+func (g *gateway) candidates(c config, session string, pinned bool, guess, native string) ([]account, string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
@@ -540,7 +543,22 @@ func (g *gateway) candidates(c config, session string, pinned bool, guess string
 		}
 		return 2
 	}
+	// An account nearly out goes behind every account with more left, even for a conversation it owns
+	// or when it is preferred: running it to empty fails the turn that hits the limit. Among those, the
+	// client's own login goes last, since Codex locks its composer when that account is out.
+	reserve := func(a account) int {
+		switch {
+		case !a.Low:
+			return 0
+		case a.ID != native:
+			return 1
+		}
+		return 2
+	}
 	sort.SliceStable(out, func(i, j int) bool {
+		if ri, rj := reserve(out[i]), reserve(out[j]); ri != rj {
+			return ri < rj
+		}
 		if ri, rj := rank(out[i]), rank(out[j]); ri != rj {
 			return ri < rj
 		}

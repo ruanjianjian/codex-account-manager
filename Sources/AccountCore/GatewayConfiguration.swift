@@ -118,6 +118,21 @@ public struct GatewayConfiguration {
     }
 }
 
+/// An account with less than `line` percent left in a window that has not reset is kept in reserve: routing
+/// turns to it only when no account with more left can take the request. Running an account to empty fails
+/// the turn that hits the limit, and the account Codex is signed in to locks Codex's composer when it is out.
+public enum RoutingReserve {
+    public static let line = 10.0
+    public static func low(_ windows: [QuotaWindow], now: Date = Date()) -> Bool {
+        windows.contains { ($0.remaining ?? 100) < line && ($0.resetDate ?? .distantFuture) > now }
+    }
+    /// The accounts routing turns to first: those above the line, or all of them when none is.
+    public static func ample(_ slots: [AccountSlot], now: Date = Date()) -> [AccountSlot] {
+        let above = slots.filter { !low($0.snapshot?.rates.windows ?? [], now: now) }
+        return above.isEmpty ? slots : above
+    }
+}
+
 public struct GatewayAccount: Codable {
     public let id: String
     public let accountID: String
@@ -125,12 +140,13 @@ public struct GatewayAccount: Codable {
     public let expires: Double
     public let available: Bool
     public let reset: Double
-    public init(id: String, credential: DesktopCredential, available: Bool, reset: Double) throws {
+    public let low: Bool
+    public init(id: String, credential: DesktopCredential, available: Bool, reset: Double, low: Bool = false) throws {
         let raw = try JSONSerialization.jsonObject(with: credential.data) as? [String: Any]
         guard let token = (raw?["tokens"] as? [String: Any])?["access_token"] as? String else { throw GatewayConfigurationError.credentials }
         guard let exp = JWTClaims.decode(token)?["exp"] as? Double else { throw GatewayConfigurationError.credentials }
         self.id = id; self.accountID = credential.accountID; self.access = token; self.expires = exp
-        self.available = available; self.reset = reset
+        self.available = available; self.reset = reset; self.low = low
     }
 }
 
