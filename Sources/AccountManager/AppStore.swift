@@ -272,7 +272,8 @@ enum SlotStatus: Equatable {
                   let credential = try? GatewayCredentialSource.select(expected: expected, desktop: desktopData, stored: { try Data(contentsOf: auth) }) else { continue }
             let windows = slot.snapshot?.rates.windows ?? []
             let spent = windows.contains { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
-            if let value = try? GatewayAccount(id: slot.id, credential: credential, available: !spent, reset: windows.quotaReset ?? 0) { accounts.append(value) }
+            if let value = try? GatewayAccount(id: slot.id, credential: credential, available: !spent, reset: windows.quotaReset ?? 0,
+                                               low: RoutingReserve.low(windows, now: now)) { accounts.append(value) }
         }
         try gateway.save(accounts: accounts, preferred: gatewayPreferred, clients: identities)
     }
@@ -329,6 +330,17 @@ enum SlotStatus: Equatable {
         gatewayPreferred = id; UserDefaults.standard.set(id, forKey: "gateway.preferred")
         do { try updateGatewayPool() } catch { banner = error.localizedDescription }
     }
+    /// The chosen account when it is nearly out, so routing turns to an account with more left first.
+    var preferredInReserve: AccountSlot? {
+        let low = { (slot: AccountSlot) in RoutingReserve.low(slot.snapshot?.rates.windows ?? [], now: self.now) }
+        guard let chosen = slot(gatewayPreferred), low(chosen), saved.accounts.contains(where: { !low($0) }) else { return nil }
+        return chosen
+    }
+    var routingOrder: String {
+        if gatewayPreferred.isEmpty { return L("最早重置优先", "Soonest reset first") }
+        return preferredInReserve.map { L("\($0.displayName) 快用完了，先用别的号", "\($0.displayName) is nearly out; others go first") }
+            ?? L("优先 ", "Prefer ") + (slot(gatewayPreferred)?.displayName ?? L("指定账号", "chosen account"))
+    }
     var healthy: Set<String> { Set(status.filter { $0.value == .connected }.map(\.key)) }
     var connectedCount: Int { healthy.count }
     var isBusy: Bool { !busy.isEmpty }
@@ -336,7 +348,7 @@ enum SlotStatus: Equatable {
     var canConnect: Bool { persistenceEnabled && !preview }
     var loginName: String { saved.accounts.first { $0.id == loginSlotID }?.displayName ?? L("账号", "Account") }
     var menuTitle: String {
-        let active = saved.accounts.filter { healthy.contains($0.id) && $0.snapshot?.isFresh(at: now) == true }
+        let active = RoutingReserve.ample(saved.accounts.filter { healthy.contains($0.id) && $0.snapshot?.isFresh(at: now) == true }, now: now)
         guard let best = active.min(by: { ($0.snapshot?.rates.windows.compactMap(\.resetDate).min() ?? .distantFuture) < ($1.snapshot?.rates.windows.compactMap(\.resetDate).min() ?? .distantFuture) }),
               let remaining = best.snapshot?.rates.windows.compactMap(\.remaining).min() else { return "Codex \(connectedCount)/\(saved.accounts.count)" }
         return "\(best.displayName) \(Int(remaining))%"
@@ -349,11 +361,13 @@ enum SlotStatus: Equatable {
             return desktopAccountID.flatMap { id in saved.accounts.first { $0.expectedAccountID == id }?.id }
         }
         func usable(_ slot: AccountSlot) -> Bool { (slot.snapshot?.rates.windows.compactMap(\.remaining).min() ?? 0) > 0 }
-        if let id = gatewayAccount ?? routingActivity.lastAccount, let slot = self.slot(id), usable(slot) { return id }
-        if let slot = self.slot(gatewayPreferred), usable(slot) { return slot.id }
+        // Like the gateway, an account nearly out counts only when every other one is too.
+        let open = RoutingReserve.ample(saved.accounts.filter(usable), now: now)
+        if let id = gatewayAccount ?? routingActivity.lastAccount, open.contains(where: { $0.id == id }) { return id }
+        if open.contains(where: { $0.id == gatewayPreferred }) { return gatewayPreferred }
         // Automatic routing: the account whose quota resets first, like the gateway picks.
         let reset = { (slot: AccountSlot) in slot.snapshot?.rates.windows.quotaReset ?? .infinity }
-        return saved.accounts.filter(usable).min { reset($0) < reset($1) }?.id
+        return open.min { reset($0) < reset($1) }?.id
     }
     static let codexBundle = "com.openai.codex"
     @Published var switchingCodexLogin = false

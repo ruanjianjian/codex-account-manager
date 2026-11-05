@@ -78,7 +78,7 @@ struct EmbeddedWidgetView: View {
         guard store.gatewayReady else { return L("等待网关", "Waiting for the gateway") }
         let busy = store.routingActivity.active.count
         if busy > 0 { return L("\(busy) 个请求中", "\(busy) request\(busy == 1 ? "" : "s") running") }
-        return store.gatewayPreferred.isEmpty ? L("最早重置优先", "Soonest reset first") : L("优先 ", "Prefer ") + (store.slot(store.gatewayPreferred)?.displayName ?? L("指定账号", "chosen account"))
+        return store.routingOrder
     }
     @ViewBuilder private var footer: some View {
         if let next = spentUntil {

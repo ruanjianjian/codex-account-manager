@@ -185,12 +185,12 @@ func TestExpiredAndPreferred(t *testing.T) {
 	c := pool()
 	c.Preferred = "two"
 	g := newGateway(func() (config, error) { return c, nil }, "", func(event) {})
-	xs, _ := g.candidates(c, "", false, "")
+	xs, _ := g.candidates(c, "", false, "", "")
 	if len(xs) != 2 || xs[0].ID != "two" || xs[1].ID != "one" {
 		t.Fatal(xs)
 	}
 	c.Accounts[1].Expires = 1
-	xs, _ = g.candidates(c, "", false, "")
+	xs, _ = g.candidates(c, "", false, "", "")
 	if len(xs) != 1 || xs[0].ID != "one" {
 		t.Fatal("expired token used", xs)
 	}
@@ -433,14 +433,14 @@ func TestOngoingConversationStaysBeforePreferred(t *testing.T) {
 	c.Preferred = "two"
 	g := newGateway(func() (config, error) { return c, nil }, "", func(event) {})
 	g.remember("running", "one")
-	if xs, _ := g.candidates(c, "running", false, ""); len(xs) != 2 || xs[0].ID != "one" || xs[1].ID != "two" {
+	if xs, _ := g.candidates(c, "running", false, "", ""); len(xs) != 2 || xs[0].ID != "one" || xs[1].ID != "two" {
 		t.Fatal("running conversation moved to preferred", xs)
 	}
-	if xs, _ := g.candidates(c, "fresh", false, ""); xs[0].ID != "two" {
+	if xs, _ := g.candidates(c, "fresh", false, "", ""); xs[0].ID != "two" {
 		t.Fatal("new conversation ignored preferred", xs)
 	}
 	c.Accounts[0].Available = false
-	if xs, _ := g.candidates(c, "running", false, ""); len(xs) != 1 || xs[0].ID != "two" {
+	if xs, _ := g.candidates(c, "running", false, "", ""); len(xs) != 1 || xs[0].ID != "two" {
 		t.Fatal("unavailable owner not replaced by preferred", xs)
 	}
 }
@@ -520,16 +520,43 @@ func TestNewConversationsUseTheEarliestReset(t *testing.T) {
 	c := pool()
 	c.Accounts[0].Reset, c.Accounts[1].Reset = 900, 300
 	g := newGateway(func() (config, error) { return c, nil }, "", func(event) {})
-	if xs, _ := g.candidates(c, "fresh", false, ""); xs[0].ID != "two" {
+	if xs, _ := g.candidates(c, "fresh", false, "", ""); xs[0].ID != "two" {
 		t.Fatal("new conversation skipped the earliest reset", xs)
 	}
 	c.Accounts[1].Reset = 0
-	if xs, _ := g.candidates(c, "fresh", false, ""); xs[0].ID != "one" {
+	if xs, _ := g.candidates(c, "fresh", false, "", ""); xs[0].ID != "one" {
 		t.Fatal("unknown reset ranked before a known one", xs)
 	}
 	c.Accounts[1].Reset, c.Preferred = 300, "one"
-	if xs, _ := g.candidates(c, "fresh", false, ""); xs[0].ID != "one" {
+	if xs, _ := g.candidates(c, "fresh", false, "", ""); xs[0].ID != "one" {
 		t.Fatal("chosen account ignored", xs)
+	}
+}
+
+func TestAnAccountNearlyOutStepsAside(t *testing.T) {
+	c := pool()
+	c.Accounts = append(c.Accounts, account{ID: "three", AccountID: "acct-three", Access: "token-three", Expires: float64(time.Now().Unix() + 3600), Available: true, Reset: 3})
+	c.Accounts[0].Low, c.Preferred = true, "one"
+	g := newGateway(func() (config, error) { return c, nil }, "", func(event) {})
+	g.remember("running", "one")
+	// Neither the chosen account nor a conversation it owns keeps it in front.
+	for _, session := range []string{"fresh", "running"} {
+		if xs, _ := g.candidates(c, session, false, "", ""); len(xs) != 3 || xs[0].ID != "two" || xs[2].ID != "one" {
+			t.Fatal("nearly-out account kept in front", session, xs)
+		}
+	}
+	// Among accounts nearly out, the one the client is signed in to goes last.
+	c.Accounts[1].Low = true
+	if xs, _ := g.candidates(c, "fresh", false, "", "one"); xs[0].ID != "three" || xs[1].ID != "two" || xs[2].ID != "one" {
+		t.Fatal("client's own login spent before another reserve", xs)
+	}
+	// It is still used when nothing else is left, and a stored response still stays with its owner.
+	c.Accounts[1].Available, c.Accounts[2].Available = false, false
+	if xs, _ := g.candidates(c, "fresh", false, "", "one"); len(xs) != 1 || xs[0].ID != "one" {
+		t.Fatal("last account with quota not used", xs)
+	}
+	if xs, stuck := g.candidates(c, "running", true, "", ""); stuck != "" || len(xs) != 1 || xs[0].ID != "one" {
+		t.Fatal("stored response moved", xs, stuck)
 	}
 }
 

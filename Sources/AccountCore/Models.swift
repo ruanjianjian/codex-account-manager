@@ -183,7 +183,7 @@ public enum Presentation {
         return L("\(minutes) 分钟", "\(minutes) min")
     }
     public static func recommendation(_ slots: [AccountSlot], healthy: Set<String>, now: Date = Date()) -> String? {
-        let candidates = slots.filter { healthy.contains($0.id) && $0.snapshot?.isFresh(at: now) == true && $0.snapshot?.rates.canRecommend == true }
+        let candidates = RoutingReserve.ample(slots.filter { healthy.contains($0.id) && $0.snapshot?.isFresh(at: now) == true && $0.snapshot?.rates.canRecommend == true }, now: now)
         let ranked = candidates.compactMap { slot -> (AccountSlot, QuotaWindow)? in
             guard let window = slot.snapshot?.rates.windows.filter({ $0.resetDate != nil && $0.remaining != nil }).min(by: { $0.resetDate! < $1.resetDate! }) else { return nil }
             return (slot, window)

@@ -49,7 +49,7 @@ struct RoutingActivityView: View {
                     }.frame(height: flowHeight).scrollIndicators(.hidden)
                 }
                 HStack(spacing: 6) {
-                    Text(store.gatewayPreferred.isEmpty ? L("最早重置优先", "Soonest reset first") : L("优先指定账号", "Chosen account first"))
+                    Text(store.routingOrder).lineLimit(1)
                     Spacer(minLength: 0)
                     Text(L("\(activity.completed) 完成 · \(activity.reroutes) 换路", "\(activity.completed) done · \(activity.reroutes) rerouted"))
                         .monospacedDigit().help(L("本次启动后的请求统计；换路只在真正尝试下一个账号时计数", "Requests since launch; a reroute counts only when another account is actually tried"))
