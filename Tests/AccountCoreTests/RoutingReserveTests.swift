@@ -12,11 +12,13 @@ final class RoutingReserveTests: XCTestCase {
         return slot
     }
     private func low(_ slot: AccountSlot) -> Bool { RoutingReserve.low(slot.snapshot!.rates.windows, now: now) }
-    func testUnderTenPercentInAnyWindowIsLow() throws {
+    func testUnderFivePercentInAnyWindowIsLow() throws {
         XCTAssertTrue(low(try slot("a", weekly: 96)))
         XCTAssertFalse(low(try slot("a", weekly: 84)))
+        XCTAssertFalse(low(try slot("a", weekly: 95)))
         XCTAssertFalse(low(try slot("a", weekly: 90)))
-        XCTAssertTrue(low(try slot("a", weekly: 20, short: 95)))
+        XCTAssertTrue(low(try slot("a", weekly: 20, short: 97)))
+        XCTAssertFalse(low(try slot("a", weekly: 20, short: 95)))
         // A window that has already reset is full again.
         XCTAssertFalse(low(try slot("a", weekly: 96, resetHours: -1)))
         XCTAssertFalse(RoutingReserve.low([], now: now))
