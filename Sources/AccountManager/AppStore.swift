@@ -208,8 +208,12 @@ enum SlotStatus: Equatable {
                 self.gatewayCaption = L("正在使用 \(id.flatMap { self.slot($0)?.displayName } ?? "账号")", "Using \(id.flatMap { self.slot($0)?.displayName } ?? "an account")")
             case "completed": self.gatewayCaption = L("路由成功 · \(id.flatMap { self.slot($0)?.displayName } ?? "账号")", "Routed · \(id.flatMap { self.slot($0)?.displayName } ?? "account")")
             case "refused":
-                self.gatewayCaption = L("账号暂不可用，正在尝试其他账号", "Account unavailable, trying another")
+                // Only the account's own refusals mean the account is unavailable; the service's errors pause nobody.
+                self.gatewayCaption = [401, 403, 429].contains(code ?? 0) || GatewayFault.accountCodes.contains(event.reason ?? "")
+                    ? L("账号暂不可用，正在尝试其他账号", "Account unavailable, trying another")
+                    : L("Codex 服务出错，账号没有暂停", "The Codex service failed; no account was paused")
                 if let id, code == 401 { self.refresh(id) }
+            case "network_error": self.gatewayCaption = GatewayFault.networkCaption(event.reason)
             case "interrupted": self.gatewayCaption = L("回复中断，未重复执行；请在 Codex 中重试", "The reply was cut off and not repeated; retry in Codex")
             case "stopped": self.fallBackToDirect(L("网关已停止：\(event.reason ?? "进程已退出")", "Gateway stopped: \(event.reason ?? "the process exited")"))
             case "rejected": if let caption = self.rejectionCaption(event) { self.gatewayCaption = caption }

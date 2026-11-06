@@ -416,3 +416,21 @@ Tibot 有了英文界面。默认跟随系统：系统语言列表里只要有�
 | 新的线 | 通过 | `RoutingReserveTests`：周额度剩 4%、5 小时额度剩 3% → 备用；剩 5%、10%、16% 不算 |
 | 真实：装上候选版 | 通过 | 本机 `pool.json`：剩 1% 的 account-ae4d1b10 `low:true`，剩 10% 的 account-7f9c8d5f `low:false`；官方 CLI 新会话 10:58:24 走 account-7f9c8d5f 并完成 |
 | 全部单测 | 通过 | Swift 116 项（1 项原有跳过）；Go 全过 |
+
+## 2026-11-06 一次出错不再连坐所有账号，响应头原样透传（v0.4.28）
+
+自检发现网关把每个错误都算成账号的错：上游 5xx、网络错误、流里的 `response.failed` 都让账号暂停 15–60 秒，再把同一请求轮流发给每个号。11-03 13:38 一个会话碰上上游抖动，三个号连着暂停，另一个正常会话被赶出原号（缓存 99% → 45%），随后收到 503 `accounts_cooling`。另一台电脑 11-06 的诊断（Clash 节点连接超时）里，19 个失败请求全是 `network_error`，网关却汇总成「所有账号都不接单」。网关还丢掉了上游全部响应头（额度、`x-models-etag`、`x-codex-turn-state`），以及请求里的 `x-openai-subagent` 等头，并把 `originator` 改写成 `codex_cli_rs`。
+
+| 测试需求点 | 是否通过 | 证据摘要 |
+|---|---|---|
+| 一次出错不连坐 | 通过 | `TestOneConversationsFailureMovesNoOtherConversation`（HTTP 502 和流内 server_error 两种）：出错的会话每次最多试 2 个号，Codex 拿到服务端原话；同号上的正常会话 3 次都留在原号；没有号被暂停 |
+| 真坏的号才歇 | 通过 | `TestThreeConversationsFailingPauseAnAccount`：一分钟内三个不同会话在同一号上失败才歇 30 秒，新请求先走别的号 |
+| 网络错误不换号、说清哪一步 | 通过 | `TestNetworkErrorEndsAtOnceWithoutPausing`、`TestNetworkFaultWords`：只试 1 个号，502 写明 `connection refused`、不是账号问题；日志记 `proxy_timeout` / `proxy_eof` / `proxy_upstream` / `header_timeout` / `tls` / `dns` 等固定类别和耗时 |
+| 请求本身的问题原样给 Codex | 通过 | `TestRequestFailuresReachCodexAsTheyAre`：`context_length_exceeded` 从第一个号原样流回（不报「中断」），HTTP 400 正文一字不改；不暂停 |
+| 账号自己的拒绝照常换号 | 通过 | `TestAccountFailureInStreamMovesOn`：流内 `usage_limit_reached` → 记额度到点时间、换下一个号 |
+| 头双向透传 | 通过 | `TestHeadersCrossBothWays`：额度头、`openai-model`、`x-models-etag`、`x-reasoning-included`、`x-codex-turn-state` 到达 Codex，`Set-Cookie` 不到；`x-openai-subagent`、`x-codex-parent-thread-id`、`x-client-request-id`、客户端自己的 `originator` 到达上游；换到别的号时不带上一号的 turn state；`/models` 的 304 原样回 |
+| 真实 Codex 经新网关 | 通过 | 临时网关（本机真实账号池，端口 18499）+ 内置 CLI 0.165 `codex exec`：回复 `TIBOT-OK`，走 account-b2f01340 并完成 |
+| 真实：响应头到达 | 通过 | 同一网关 curl 一次真实请求：返回 `X-Codex-Primary-Used-Percent: 84`、`X-Codex-Active-Limit`、`X-Codex-Plan-Type`、`X-Models-Etag`、`X-Codex-Turn-State`；没有 `Set-Cookie` |
+| 真实：代理不通 | 通过 | 网关指向一个死代理端口：新版每次只试 1 个号，Codex 26 秒后停下并显示 `Cannot reach the Codex service … connection refused … not an account problem`；日志 30 次 `network_error`（`proxy_refused`），0 次暂停。同场景旧版 cbc6530：每次失败都暂停账号并回 503 `accounts_cooling`（带 `Retry-After: 15`），Codex 照着等了 436 秒，最后显示 `Every account is pausing after an upstream error` |
+| 独立评审 | 通过 | 另一个 agent 只看代码复现出 4 个问题，均已修并补测：空的 200 被当成回答（`TestAnEmptyReplyIsNotAnAnswer`）；服务端出错后下一个号因额度拒绝，原错误被「所有账号拒绝」盖掉（`TestServiceFailureIsNotHiddenByALaterAccountRefusal`）；Go 的代理 CONNECT 失败不带 proxyconnect，改为按请求是否走代理判定，用真实 transport + 真实代理测拒绝 / 断开 / 没开三种（`TestProxyFailuresAreNamedAsTheProxys`）；`response.incomplete` 结尾被报成中断（`TestAnIncompleteResponseIsAnAnswer`） |
+| 全部单测 | 通过 | Go 全过（含 `-race` 和 e2e：真实 CLI + 假上游）；Swift 117 项（1 项原有跳过） |

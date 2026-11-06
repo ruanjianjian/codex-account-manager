@@ -45,7 +45,7 @@ Accounts and settings live in `~/Library/Application Support/CodexAccountsPublic
 
 A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 工具：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
-**测试版 v0.4.27-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+**测试版 v0.4.28-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
 
 ## 一行安装
 
@@ -62,6 +62,8 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 独立社区工具，与 OpenAI、X 无隶属或背书关系。所有账号都由使用者自行登录；不附带账号、API Key、Cookie 或任何个人登录数据。
 
 ## 遇到问题
+
+**Codex 报 `502 Bad Gateway: Cannot reach the Codex service …`**：网关连不上 ChatGPT，后面写着哪一步出错（比如 `through the proxy: connection timed out` 是经代理连接超时）。这是网络或代理的问题，跟账号无关，Tibot 不会因此暂停或更换账号；先换个代理节点试试。
 
 **Codex 报 `502 Bad Gateway: Unknown error`（地址是 127.0.0.1:18456）**：网关连不上 ChatGPT，常见于需要代理才能上 ChatGPT 的网络。v0.4.8 起网关和 Codex 一样走这台 Mac 的代理，重跑上面的一行安装命令更新即可；不跑的话，空闲时最晚约 6 小时也会自动更新。账号、登录和路由都保留，不用重启 Codex，也不用重新授权。
 
@@ -97,7 +99,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 **使用期间保持 Tibot 运行。** 私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
 
-网关是独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress）。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放。会话先留在第一次回答它的账号上，保住提示缓存；绑定保存在本机，网关重启后继续使用。这个账号额度用完、冷却或登录过期时，会话连同加密历史和压缩内容一起换到其他有额度的账号继续，换过去的第一次没有缓存，会多用一些额度。剩不到 5% 的号（任一额度窗口）先放着不用：新会话、绑在它上面的会话、哪怕它是「新会话优先」的号，都先换到额度更多的号；别的号都不到 5% 时才用它，Codex 自己登录的那个号最后用，免得它用完把 Codex 锁住。Codex 发消息前会先查自己登录的那个号，那个号用完时它直接锁住发送，消息到不了路由；这时 Tibot 面板会出「换到 X」按钮：点一下退出并重开 Codex，让它登录一个还有额度的号（正在跑的请求会被打断，点之前会提示）。原生云端/远程功能尚未完整验收。
+网关是独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress）。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放。会话先留在第一次回答它的账号上，保住提示缓存；绑定保存在本机，网关重启后继续使用。这个账号额度用完、冷却或登录过期时，会话连同加密历史和压缩内容一起换到其他有额度的账号继续，换过去的第一次没有缓存，会多用一些额度。剩不到 5% 的号（任一额度窗口）先放着不用：新会话、绑在它上面的会话、哪怕它是「新会话优先」的号，都先换到额度更多的号；别的号都不到 5% 时才用它，Codex 自己登录的那个号最后用，免得它用完把 Codex 锁住。只有账号自己的拒绝（登录失效、额度用完、限速）才让它暂停；服务端出错时最多再换一个号试，谁都不暂停（同一个号一分钟内连着坏了三个不同会话才歇 30 秒）；网络或代理连不上时不换号，直接告诉 Codex「连不上服务，不是账号问题」，由 Codex 自己重试；请求本身的问题（比如上下文太长）原样交给 Codex 处理。服务返回的响应头（额度、模型目录版本等）原样带给 Codex。Codex 发消息前会先查自己登录的那个号，那个号用完时它直接锁住发送，消息到不了路由；这时 Tibot 面板会出「换到 X」按钮：点一下退出并重开 Codex，让它登录一个还有额度的号（正在跑的请求会被打断，点之前会提示）。原生云端/远程功能尚未完整验收。
 
 网关连 ChatGPT 时和 Codex 一样走这台 Mac 的代理（先看 `https_proxy` 等环境变量，再看系统设置里的 HTTPS / SOCKS 代理，每 30 秒重读；自动代理 PAC 不支持），需要代理才能上 ChatGPT 的网络也能用。网关只监听本机，使用独立随机密钥；只导出短期 access token，沿用原采集进程管理 OAuth 刷新。网关凭据及配置备份位于数据目录 `gateway/`，禁止上传。详见 [网关说明](Gateway/README.md) 与 [验证记录](docs/VALIDATION.md)。
 
@@ -114,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 ## 手动安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.27-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.28-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 App 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。装了 Codex 桌面（ChatGPT App）就自带 CLI，本版用其内置 CLI 0.165 验证；旧版 CLI 可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。

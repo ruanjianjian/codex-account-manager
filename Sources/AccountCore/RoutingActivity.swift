@@ -17,6 +17,31 @@ public struct GatewayActivityEvent: Codable, Sendable {
     }
 }
 
+/// The gateway's fixed failure words, in the user's words.
+public enum GatewayFault {
+    /// Stream failure codes that are the account's own refusal (its quota or rate limit).
+    public static let accountCodes: Set<String> = ["insufficient_quota", "usage_limit_reached", "usage_not_included", "rate_limit_exceeded"]
+    /// A network failure is never an account's: every account goes through the same network and proxy.
+    public static func networkCaption(_ reason: String?) -> String {
+        let reason = reason ?? ""
+        let proxy = reason.hasPrefix("proxy_")
+        let what: String
+        switch proxy ? String(reason.dropFirst(6)) : reason {
+        case "header_timeout": what = L("90 秒没等到回复", "no reply within 90 seconds")
+        case "upstream": what = L("代理连不到服务", "the proxy could not connect onward")
+        case "dns": what = L("域名解析失败", "name lookup failed")
+        case "refused": what = L("连接被拒绝", "connection refused")
+        case "reset": what = L("连接被重置", "connection reset")
+        case "tls": what = L("加密连接失败", "secure connection failed")
+        case "timeout": what = L("连接超时", "connection timed out")
+        case "eof": what = L("连接被断开", "connection closed")
+        default: what = L("网络出错", "network error")
+        }
+        let place = proxy ? L("（经代理）", " through the proxy") : ""
+        return L("连不上 Codex 服务\(place)：\(what)。请检查代理或网络，不是账号问题", "Can't reach the Codex service\(place): \(what). Check the network or proxy; not an account problem")
+    }
+}
+
 public struct PromptCacheUse: Equatable, Sendable {
     public let cached: Int64
     public let input: Int64

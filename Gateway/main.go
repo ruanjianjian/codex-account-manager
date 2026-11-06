@@ -63,6 +63,8 @@ type event struct {
 	Input   int64  `json:"input,omitempty"`
 	Cached  int64  `json:"cached,omitempty"`
 	Output  int64  `json:"output,omitempty"`
+	// How long the upstream attempt took, for refusals and network errors.
+	MS int64 `json:"ms,omitempty"`
 }
 type binding struct {
 	ID    string
@@ -79,7 +81,28 @@ type gateway struct {
 	sticky     map[string]binding
 	rest       map[string]time.Time
 	limited    map[string]limit
+	strikes    map[string][]strike
 }
+
+// One conversation the service failed on an account (a 5xx, or a stream that failed before any output).
+type strike struct {
+	conversation string
+	at           time.Time
+}
+
+// Why an account did not answer a request.
+type fault int
+
+const (
+	faultNone     fault = iota
+	faultAccount        // the account's own refusal: its login, its quota or its rate limit; it pauses
+	faultUpstream       // the service had a moment; another account may get through, nobody pauses
+	faultRequest        // the request itself; every account would answer the same, so Codex gets the answer
+)
+
+// A request the service fails is tried on one more account at most, then Codex gets the failure and retries on
+// its own: trying every account turned one bad moment into minutes of waiting.
+const maxUpstreamTries = 2
 
 // An account the server refused for its usage limit. A different quota reset from Tibot afterwards
 // means its quota came back early (a banked reset, a reset for everyone), so it is used again at once.
@@ -92,7 +115,7 @@ func newGateway(read func() (config, error), base string, emit func(event)) *gat
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 90 * time.Second
 	tr.Proxy = newSystemProxy().For
-	return &gateway{config: read, base: base, client: &http.Client{Transport: tr, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, emit: emit, sticky: map[string]binding{}, rest: map[string]time.Time{}, limited: map[string]limit{}}
+	return &gateway{config: read, base: base, client: &http.Client{Transport: tr, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, emit: emit, sticky: map[string]binding{}, rest: map[string]time.Time{}, limited: map[string]limit{}, strikes: map[string][]strike{}}
 }
 
 type requestTraceKey struct{}
@@ -315,69 +338,89 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.refuse(w, r, g.verdict(c, "no_available_account", "No available account. Refresh or reconnect accounts in Tibot."))
 		return
 	}
-	for _, a := range candidates {
+	owner := g.owner(session, guess)
+	upstreamFaults := 0
+	// The service's own failure of this request, for Codex when no later account answers either: it says what
+	// happened, where "every account declined" would send the user to refresh accounts that were fine.
+	var pending func()
+	for i, a := range candidates {
 		if r.Context().Err() != nil {
 			return
 		}
-		req, err := g.request(r, path, body, a)
+		// The last chance to answer: no account is left, or the service already failed this request elsewhere.
+		last := i == len(candidates)-1 || upstreamFaults+1 >= maxUpstreamTries
+		req, err := g.request(r, path, body, a, a.ID == owner)
 		if err != nil {
 			reject(502, "upstream_request_error", a.ID, "Cannot create upstream request.")
 			return
 		}
 		g.emitRequest(r, event{Kind: "routing", Account: a.ID, Session: session})
+		started := time.Now()
 		res, err := g.client.Do(req)
 		if err != nil {
 			if r.Context().Err() != nil {
 				return
 			}
-			g.emitRequest(r, event{Kind: "network_error", Account: a.ID})
-			g.cool(a.ID, time.Now().Add(15*time.Second))
-			continue
+			// Every account goes through this Mac's network and proxy, so none would get through and none is
+			// at fault: Codex hears it at once, with what failed, and retries on its own.
+			g.unreachable(w, r, req, a, err, started)
+			return
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body.Close()
-			g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: res.StatusCode, Session: session})
-			if retryable(res.StatusCode) {
+			g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: res.StatusCode, Session: session, MS: since(started)})
+			switch statusFault(res.StatusCode) {
+			case faultAccount:
 				until := retryAt(res.Header, b)
 				g.cool(a.ID, until)
 				if res.StatusCode == 429 {
 					g.limit(a, until)
 				}
 				continue
+			case faultUpstream:
+				upstreamFaults++
+				g.strike(a.ID, conversation(r))
+				if !last {
+					pending = func() { relay(w, res, b, a.ID) }
+					continue
+				}
+			default:
+				// An account that cannot read this conversation's encrypted history is not at fault; the next one may.
+				if sealed && res.StatusCode == 400 && bytes.Contains(b, []byte("encrypted")) && !last {
+					continue
+				}
 			}
-			// An account that cannot read this conversation's encrypted history is not at fault; the next one may.
-			if sealed && res.StatusCode == 400 && bytes.Contains(b, []byte("encrypted")) {
-				continue
-			}
-			fail(w, res.StatusCode, "Upstream rejected the request; account "+a.ID+". No retry was made.")
+			relay(w, res, b, a.ID)
 			return
 		}
 		reply := bufio.NewReaderSize(res.Body, 64<<10)
-		if !eventStream(res.Header.Get("Content-Type"), reply) {
-			b, e := io.ReadAll(io.LimitReader(reply, 32<<20))
-			res.Body.Close()
-			if e != nil {
-				fail(w, 502, "Upstream reply interrupted.")
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Codex-Accounts-Slot", a.ID)
-			w.WriteHeader(res.StatusCode)
-			w.Write(b)
+		var done bool
+		var f fault
+		if eventStream(res.Header.Get("Content-Type"), reply) {
+			done, f = g.stream(w, r, reply, res, a, session, last, started)
+		} else if b, e := io.ReadAll(io.LimitReader(reply, 32<<20)); e != nil {
+			done = r.Context().Err() != nil || g.unreachable(w, r, req, a, e, started)
+		} else if len(b) == 0 {
+			done, f = g.closedEarly(w, r, a, last, started), faultUpstream
+		} else {
 			g.remember(session, a.ID)
+			relay(w, res, b, a.ID)
 			g.emitRequest(r, event{Kind: "completed", Account: a.ID, Session: session})
-			return
+			done = true
 		}
-		committed, retry := g.stream(w, r, reply, a, session)
 		res.Body.Close()
-		if committed {
+		if done {
 			return
 		}
-		if !retry {
-			fail(w, 502, "Upstream stream failed before output.")
-			return
+		if f == faultUpstream {
+			upstreamFaults++
+			pending = func() { fail(w, 502, "The Codex service failed this request before any output; retry in Codex.") }
 		}
+	}
+	if pending != nil {
+		pending()
+		return
 	}
 	g.refuse(w, r, g.verdict(c, "all_accounts_declined", "All available accounts declined this request. Refresh accounts in Tibot or wait for a quota reset."))
 }
@@ -467,7 +510,191 @@ func eventStream(contentType string, body *bufio.Reader) bool {
 	head, _ := body.Peek(6)
 	return bytes.HasPrefix(head, []byte("event:")) || bytes.HasPrefix(head, []byte("data:")) || bytes.HasPrefix(head, []byte(":"))
 }
-func retryable(code int) bool { return code == 401 || code == 403 || code == 429 || code >= 500 }
+func statusFault(code int) fault {
+	switch {
+	case code == 401 || code == 403 || code == 429:
+		return faultAccount
+	case code >= 500:
+		return faultUpstream
+	}
+	return faultRequest
+}
+
+// The error codes a stream can fail with before any output. Codes about the request (context too long, a flagged
+// prompt) reach Codex as they are: it compacts, explains or retries by itself, and no account would do better.
+func codeFault(code string) fault {
+	switch code {
+	case "insufficient_quota", "usage_limit_reached", "usage_not_included", "rate_limit_exceeded":
+		return faultAccount
+	case "", "server_error", "server_is_overloaded", "slow_down":
+		return faultUpstream
+	}
+	return faultRequest
+}
+
+// Only fixed words reach the diagnostics log.
+func safeCode(code string) string {
+	if code == "" {
+		return "no_code"
+	}
+	if len(code) > 48 || strings.IndexFunc(code, func(c rune) bool { return !(c == '_' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') }) >= 0 {
+		return "other"
+	}
+	return code
+}
+
+// Hop-by-hop headers and the ones the gateway itself sets never cross it. Everything else does: the service sees
+// the client's own headers (subagent, parent thread, request id, originator) and Codex sees the service's (its
+// rate limits, model, models etag, turn state), as without the gateway.
+var requestOwned = headerSet("Authorization", "Chatgpt-Account-Id", "Content-Length", "Content-Encoding", "Accept-Encoding",
+	"Host", "Cookie", "Origin", "Proxy-Authorization")
+var responseOwned = headerSet("Content-Length", "Content-Encoding", "Set-Cookie")
+
+func headerSet(names ...string) map[string]bool {
+	set := map[string]bool{}
+	for _, n := range append(names, "Connection", "Keep-Alive", "Proxy-Connection", "Te", "Trailer", "Transfer-Encoding", "Upgrade") {
+		set[http.CanonicalHeaderKey(n)] = true
+	}
+	return set
+}
+func copyHeader(dst, src http.Header, owned map[string]bool) {
+	named := map[string]bool{}
+	for _, v := range src.Values("Connection") {
+		for _, n := range strings.Split(v, ",") {
+			named[http.CanonicalHeaderKey(strings.TrimSpace(n))] = true
+		}
+	}
+	for k, vs := range src {
+		k = http.CanonicalHeaderKey(k)
+		if owned[k] || named[k] || strings.HasPrefix(k, "Sec-Fetch-") {
+			continue
+		}
+		dst[k] = append([]string(nil), vs...)
+	}
+}
+
+// Codex gets the service's own answer: its status, headers and body, which it knows how to show and retry.
+func relay(w http.ResponseWriter, res *http.Response, body []byte, slot string) {
+	copyHeader(w.Header(), res.Header, responseOwned)
+	if w.Header().Get("Content-Type") == "" && bytes.HasPrefix(bytes.TrimSpace(body), []byte("{")) {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.Header().Set("X-Codex-Accounts-Slot", slot)
+	w.WriteHeader(res.StatusCode)
+	w.Write(body)
+}
+
+func since(t time.Time) int64 { return time.Since(t).Milliseconds() }
+
+// The conversation a request belongs to, for counting how many conversations failed on an account.
+func conversation(r *http.Request) string {
+	if trace, ok := r.Context().Value(requestTraceKey{}).(requestTrace); ok {
+		if trace.session != "" {
+			return trace.session
+		}
+		return trace.id
+	}
+	return ""
+}
+
+// What failed on the way to the service, as a fixed word for the log (the error text itself names hosts and ports).
+// proxied: the request went through a proxy. Go reports a proxy that refused CONNECT, dropped it or timed out
+// with a bare status text, EOF or deadline, without saying a proxy was involved.
+func networkFault(err error, proxied bool) string {
+	s := err.Error()
+	via := ""
+	if proxied || strings.Contains(s, "proxyconnect") || strings.Contains(s, "socks connect") {
+		via = "proxy_"
+	}
+	var dns *net.DNSError
+	var ne net.Error
+	switch {
+	case strings.Contains(s, "timeout awaiting response headers"):
+		return "header_timeout"
+	case via != "" && (strings.HasSuffix(s, "Bad Gateway") || strings.HasSuffix(s, "Gateway Timeout") || strings.HasSuffix(s, "Service Unavailable")):
+		return "proxy_upstream"
+	case errors.As(err, &dns):
+		return via + "dns"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return via + "refused"
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE):
+		return via + "reset"
+	case strings.Contains(s, "tls:") || strings.Contains(s, "x509:"):
+		return via + "tls"
+	case errors.As(err, &ne) && ne.Timeout():
+		return via + "timeout"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return via + "eof"
+	}
+	return via + "other"
+}
+
+var networkWords = map[string]string{
+	"header_timeout": "no reply within 90 seconds", "upstream": "the proxy could not connect onward",
+	"dns": "name lookup failed", "refused": "connection refused", "reset": "connection reset",
+	"tls": "secure connection failed", "timeout": "connection timed out", "eof": "connection closed",
+}
+
+// A network failure ends the request at once, with no account paused and none tried in its place. Always
+// answers Codex, so it returns true for the caller's done.
+func (g *gateway) unreachable(w http.ResponseWriter, r *http.Request, upstream *http.Request, a account, err error, started time.Time) bool {
+	reason := networkFault(err, g.proxied(upstream))
+	g.emitRequest(r, event{Kind: "network_error", Account: a.ID, Reason: reason, MS: since(started)})
+	what := networkWords[strings.TrimPrefix(reason, "proxy_")]
+	if what == "" {
+		what = "network error"
+	}
+	where := ""
+	if strings.HasPrefix(reason, "proxy_") {
+		where = " through the proxy"
+	}
+	fail(w, 502, "Cannot reach the Codex service"+where+": "+what+". Check the network or proxy; this is not an account problem, and Tibot changed no account.")
+	return true
+}
+
+// Whether the upstream request goes through a proxy (the environment's, or the Mac's network settings).
+func (g *gateway) proxied(upstream *http.Request) bool {
+	tr, ok := g.client.Transport.(*http.Transport)
+	if !ok || tr.Proxy == nil || upstream == nil {
+		return false
+	}
+	u, err := tr.Proxy(upstream)
+	return err == nil && u != nil
+}
+
+// The service closed the reply before any output: its moment, not the account's. Returns done when this was
+// the last try and Codex got the failure.
+func (g *gateway) closedEarly(w http.ResponseWriter, r *http.Request, a account, last bool, started time.Time) bool {
+	g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: 502, Reason: "closed_before_output", MS: since(started)})
+	g.strike(a.ID, conversation(r))
+	if last {
+		fail(w, 502, "The Codex service closed the reply before any output; retry in Codex.")
+	}
+	return last
+}
+
+// Pauses an account for the service's own failures only when three conversations failed on it within a minute
+// and nothing succeeded on it since: one bad request, or one conversation's retries, never pushes the other
+// conversations off their accounts (and their prompt caches).
+func (g *gateway) strike(id, conversation string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	kept := []strike{{conversation, now}}
+	seen := map[string]bool{conversation: true}
+	for _, s := range g.strikes[id] {
+		if now.Sub(s.at) < time.Minute && len(kept) < 16 {
+			kept = append(kept, s)
+			seen[s.conversation] = true
+		}
+	}
+	if len(seen) >= 3 {
+		g.rest[id] = now.Add(30 * time.Second)
+		delete(g.strikes, id)
+		return
+	}
+	g.strikes[id] = kept
+}
 func retryAt(h http.Header, b []byte) time.Time {
 	seconds := 60.0
 	if n, e := strconv.ParseFloat(h.Get("Retry-After"), 64); e == nil && n > 0 {
@@ -578,11 +805,12 @@ func (g *gateway) owner(session, guess string) string {
 	return guess
 }
 func (g *gateway) remember(session, id string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.strikes, id) // it answered: the failures before were the service's moment, not this account
 	if session == "" {
 		return
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	if len(g.sticky) > 2048 {
 		for k, v := range g.sticky {
 			if v.Until.Before(time.Now()) {
@@ -610,7 +838,10 @@ func (g *gateway) limit(a account, until time.Time) {
 	defer g.mu.Unlock()
 	g.limited[a.ID] = limit{until: until, reset: a.Reset}
 }
-func (g *gateway) request(r *http.Request, path string, body []byte, a account) (*http.Request, error) {
+
+// owner: the account is the one this conversation was last served by. The service's turn state belongs to the
+// account that issued it, so it goes along only there.
+func (g *gateway) request(r *http.Request, path string, body []byte, a account, owner bool) (*http.Request, error) {
 	u := g.base + path
 	if path == "/models" && r.URL.RawQuery != "" {
 		u += "?" + r.URL.RawQuery
@@ -619,16 +850,19 @@ func (g *gateway) request(r *http.Request, path string, body []byte, a account) 
 	if e != nil {
 		return nil, e
 	}
-	for _, k := range []string{"session-id", "thread-id", "x-codex-turn-state", "x-codex-turn-metadata", "x-codex-window-id", "version", "User-Agent", "OpenAI-Beta", "x-codex-beta-features"} {
-		if v := r.Header.Get(k); v != "" {
-			q.Header.Set(k, v)
-		}
+	copyHeader(q.Header, r.Header, requestOwned)
+	if !owner {
+		q.Header.Del("X-Codex-Turn-State")
 	}
 	q.Header.Set("Authorization", "Bearer "+a.Access)
 	q.Header.Set("chatgpt-account-id", a.AccountID)
-	q.Header.Set("originator", "codex_cli_rs")
-	q.Header.Set("Content-Type", "application/json")
-	q.Header.Set("Accept", "text/event-stream")
+	if q.Header.Get("originator") == "" {
+		q.Header.Set("originator", "codex_cli_rs")
+	}
+	if r.Method == "POST" {
+		q.Header.Set("Content-Type", "application/json")
+		q.Header.Set("Accept", "text/event-stream")
+	}
 	if q.Header.Get("User-Agent") == "" {
 		q.Header.Set("User-Agent", "codex_cli_rs/0.165.0")
 	}
@@ -639,7 +873,7 @@ func (g *gateway) models(w http.ResponseWriter, r *http.Request, c config) {
 		if a.Access == "" || a.Expires <= float64(time.Now().Unix()) {
 			continue
 		}
-		q, e := g.request(r, "/models", nil, a)
+		q, e := g.request(r, "/models", nil, a, false)
 		if e != nil {
 			continue
 		}
@@ -649,71 +883,109 @@ func (g *gateway) models(w http.ResponseWriter, r *http.Request, c config) {
 		}
 		b, e := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 		res.Body.Close()
-		if e == nil && res.StatusCode == 200 {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(b)
+		// 304: the catalog Codex holds (its If-None-Match etag) is still current.
+		if e == nil && (res.StatusCode == 200 || res.StatusCode == 304) {
+			relay(w, res, b, a.ID)
 			return
 		}
 	}
 	fail(w, 503, "Model catalog unavailable.")
 }
 
-// Buffer only the prelude, never replay a stream after text or a tool call escaped.
-func (g *gateway) stream(w http.ResponseWriter, r *http.Request, reader *bufio.Reader, a account, session string) (bool, bool) {
+type streamEvent struct {
+	Type     string          `json:"type"`
+	Code     string          `json:"code"`
+	Error    json.RawMessage `json:"error"`
+	Response struct {
+		Error json.RawMessage `json:"error"`
+		Usage struct {
+			Input        int64 `json:"input_tokens"`
+			InputDetails struct {
+				Cached int64 `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+			Output int64 `json:"output_tokens"`
+		} `json:"usage"`
+	} `json:"response"`
+}
+
+// The failure's error object ("response.failed" carries it in the response, an "error" event at the top) and its code.
+func (v streamEvent) failure() (json.RawMessage, string) {
+	for _, raw := range []json.RawMessage{v.Response.Error, v.Error} {
+		var e struct {
+			Code string `json:"code"`
+		}
+		if len(raw) > 0 && json.Unmarshal(raw, &e) == nil {
+			return raw, e.Code
+		}
+	}
+	return nil, v.Code
+}
+
+// Buffer only the prelude, never replay a stream after text or a tool call escaped. Returns done once Codex has
+// its answer (the reply, the service's own failure, or why it cannot be reached); otherwise why this account did
+// not answer, and the next account may. last: no next account will be tried.
+func (g *gateway) stream(w http.ResponseWriter, r *http.Request, reader *bufio.Reader, res *http.Response, a account, session string, last bool, started time.Time) (bool, fault) {
 	var pre bytes.Buffer
-	committed := false
-	completed := false
+	committed, ended := false, false
+	commit := func() bool {
+		committed = true
+		copyHeader(w.Header(), res.Header, responseOwned)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Codex-Accounts-Slot", a.ID)
+		w.WriteHeader(200)
+		_, e := w.Write(pre.Bytes())
+		pre.Reset()
+		return e == nil
+	}
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			content := false
-			failed := false
-			var v struct {
-				Type     string `json:"type"`
-				Response struct {
-					Usage struct {
-						Input        int64 `json:"input_tokens"`
-						InputDetails struct {
-							Cached int64 `json:"cached_tokens"`
-						} `json:"input_tokens_details"`
-						Output int64 `json:"output_tokens"`
-					} `json:"usage"`
-				} `json:"response"`
-			}
-			if bytes.HasPrefix(line, []byte("data:")) {
-				data := bytes.TrimSpace(line[5:])
-				if json.Unmarshal(data, &v) == nil {
-					failed = v.Type == "error" || v.Type == "response.failed"
-					content = strings.Contains(v.Type, "delta") || strings.Contains(v.Type, "output_item") || v.Type == "response.completed"
-					if v.Type == "response.completed" {
-						completed = true
-						g.emitRequest(r, event{Kind: "completed", Account: a.ID, Input: v.Response.Usage.Input, Cached: v.Response.Usage.InputDetails.Cached, Output: v.Response.Usage.Output})
-					}
+			content, failed := false, false
+			var v streamEvent
+			if data, ok := bytes.CutPrefix(line, []byte("data:")); ok && json.Unmarshal(bytes.TrimSpace(data), &v) == nil {
+				failed = v.Type == "error" || v.Type == "response.failed"
+				// An incomplete response (a content filter, an output cap) is the service's own answer, like a completed one.
+				finished := v.Type == "response.completed" || v.Type == "response.incomplete"
+				content = strings.Contains(v.Type, "delta") || strings.Contains(v.Type, "output_item") || finished
+				if finished {
+					g.emitRequest(r, event{Kind: "completed", Account: a.ID, Input: v.Response.Usage.Input, Cached: v.Response.Usage.InputDetails.Cached, Output: v.Response.Usage.Output})
 				}
-			}
-			if failed && !committed {
-				g.cool(a.ID, time.Now().Add(time.Minute))
-				g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: 502})
-				return false, true
+				ended = ended || finished || failed
 			}
 			if !committed {
 				pre.Write(line)
-				if content || pre.Len() > 256<<10 {
-					committed = true
-					g.remember(session, a.ID)
-					w.Header().Set("Content-Type", "text/event-stream")
-					w.Header().Set("Cache-Control", "no-cache")
-					w.Header().Set("X-Codex-Accounts-Slot", a.ID)
-					w.WriteHeader(200)
-					if _, e := w.Write(pre.Bytes()); e != nil {
-						return true, false
+				switch {
+				case failed:
+					raw, code := v.failure()
+					f := codeFault(code)
+					g.emitRequest(r, event{Kind: "refused", Account: a.ID, Status: 502, Reason: safeCode(code), MS: since(started)})
+					if f == faultAccount {
+						until := retryAt(nil, append(append([]byte(`{"error":`), raw...), '}'))
+						g.cool(a.ID, until)
+						if code == "usage_limit_reached" || code == "insufficient_quota" {
+							g.limit(a, until)
+						}
+						return false, f
 					}
-					pre.Reset()
+					if f == faultUpstream {
+						g.strike(a.ID, conversation(r))
+						if !last {
+							return false, f
+						}
+					}
+					// About the request itself, or the last try: Codex gets the service's own failure and decides.
+					if !commit() {
+						return true, faultNone
+					}
+				case content || pre.Len() > 256<<10:
+					g.remember(session, a.ID)
+					if !commit() {
+						return true, faultNone
+					}
 				}
-			} else {
-				if _, e := w.Write(line); e != nil {
-					return true, false
-				}
+			} else if _, e := w.Write(line); e != nil {
+				return true, faultNone
 			}
 			if committed {
 				if f, ok := w.(http.Flusher); ok {
@@ -721,13 +993,22 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, reader *bufio.R
 				}
 			}
 		}
-		if err != nil {
-			if committed && !completed && r.Context().Err() == nil {
-				g.emitRequest(r, event{Kind: "interrupted", Account: a.ID})
+		if err == nil {
+			continue
+		}
+		switch {
+		case r.Context().Err() != nil:
+			return true, faultNone
+		case committed:
+			if !ended {
+				g.emitRequest(r, event{Kind: "interrupted", Account: a.ID, Reason: networkFault(err, g.proxied(res.Request))})
 				io.WriteString(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"Upstream stream interrupted; not replayed to avoid duplicate tool execution.\"}}\n\n")
 			}
-			return committed, !committed
+			return true, faultNone
+		case err != io.EOF:
+			return g.unreachable(w, r, res.Request, a, err, started), faultNone
 		}
+		return g.closedEarly(w, r, a, last, started), faultUpstream
 	}
 }
 

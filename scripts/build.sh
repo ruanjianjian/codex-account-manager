@@ -30,8 +30,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>CodexAccounts</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.4.27</string>
-<key>CFBundleVersion</key><string>32</string>
+<key>CFBundleShortVersionString</key><string>0.4.28</string>
+<key>CFBundleVersion</key><string>33</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSMultipleInstancesProhibited</key><true/>
 <key>NSHighResolutionCapable</key><true/>
