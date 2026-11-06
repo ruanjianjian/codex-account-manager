@@ -62,3 +62,13 @@ final class RoutingActivityTests: XCTestCase {
         XCTAssertNil(activity.lastRouted); XCTAssertNil(activity.lastCache)
     }
 }
+
+final class GatewayFaultTests: XCTestCase {
+    override func setUp() { L10n.choice = .zh } // these check the Chinese wording
+    func testNetworkFailureNamesWhatFailedAndClearsAccounts() {
+        XCTAssertEqual(GatewayFault.networkCaption("proxy_timeout"), "连不上 Codex 服务（经代理）：连接超时。请检查代理或网络，不是账号问题")
+        XCTAssertEqual(GatewayFault.networkCaption("proxy_upstream"), "连不上 Codex 服务（经代理）：代理连不到服务。请检查代理或网络，不是账号问题")
+        XCTAssertEqual(GatewayFault.networkCaption("header_timeout"), "连不上 Codex 服务：90 秒没等到回复。请检查代理或网络，不是账号问题")
+        XCTAssertEqual(GatewayFault.networkCaption(nil), "连不上 Codex 服务：网络出错。请检查代理或网络，不是账号问题")
+    }
+}
