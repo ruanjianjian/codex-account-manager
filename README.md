@@ -31,7 +31,7 @@ This is an independent community tool, not affiliated with or endorsed by OpenAI
 - **Manual download / first open:** download the archive and `SHA256SUMS.txt` from [Releases](https://github.com/ruanjianjian/codex-account-manager/releases), verify with `shasum -a 256 -c SHA256SUMS.txt`, extract into `~/Applications`, and open Tibot. Install Google Chrome in `/Applications` and the official Codex CLI (or use the CLI bundled with Codex desktop). Open Tibot from the menu bar and use `+` to authorize accounts, including any required 2FA.
 - **Gatekeeper:** the beta is ad-hoc signed, without Apple Developer ID signing or notarization. Command-line downloads normally lack the browser quarantine marker, so the one-line install avoids the manual approval flow. For a verified download blocked as an unidentified developer or because Apple cannot check it for malicious software, try opening it once, then go to **System Settings → Privacy & Security**, find the Tibot notice under Security, click **Open Anyway**, authenticate, and click **Open**. Do not disable Gatekeeper. If no button appears, confirm you tried opening the app; managed Macs may restrict approval. If macOS says the app “will damage your computer” or “is damaged and can't be opened”, download again and recheck the checksum instead of treating it as a routine notarization warning. See [Apple's guidance](https://support.apple.com/en-us/102445). Building from source is another option.
 
-Accounts and settings live in `~/Library/Application Support/CodexAccountsPublic/`; do not delete this directory when updating or share its login files. To uninstall, disable **Automatic account routing**, restart Codex, disable **Open at login**, then quit Tibot and move it to the Trash. Deleting the app leaves its data intact; remove the public app's data directory manually only if you also want to erase its local accounts and cache.
+Accounts and settings live in `~/Library/Application Support/CodexAccountsPublic/`; do not delete this directory when updating or share its login files. The gateway runs on its own as a macOS login item (listed as Tibot), so quitting or updating Tibot never interrupts Codex; when it cannot help, a request goes out on Codex's own login, as without Tibot. To uninstall, disable **Automatic account routing**, restart Codex, disable **Open at login**, quit Tibot, move it to the Trash, then stop the gateway with `launchctl bootout gui/$(id -u)/io.github.ruanjianjian.codex-accounts.gateway; rm -f ~/Library/LaunchAgents/io.github.ruanjianjian.codex-accounts.gateway.plist`. Deleting the app leaves its data intact; remove the public app's data directory manually only if you also want to erase its local accounts and cache.
 
 ---
 
@@ -45,7 +45,7 @@ Accounts and settings live in `~/Library/Application Support/CodexAccountsPublic
 
 A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 工具：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
-**测试版 v0.4.28-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+**测试版 v0.4.29-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
 
 ## 一行安装
 
@@ -95,9 +95,9 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 2. 两步完成后路由自动开启：保存原 Codex 配置，保留官方 provider 和 Fast 设置，只把推理地址指向本机网关。在设置里关掉后，不会再自动开启。
 3. 新会话立刻经过网关；已经打开的会话重启 Codex 后也会经过网关。之后请求由网关选择账号，无需为每个请求切换桌面登录。
 4. 会话始终留在第一次承接它的账号上，以复用该账号的 prompt cache；该账号不可用时才换。新会话默认先用**最早重置**的可用账号（按每周额度的重置时间），快过期的额度先用掉，用完再换下一个；也可在设置「新会话优先」或点击账号名称指定某个账号，再点一次改回自动。改指定不会把进行中的会话挪走。仅输出开始前的可重试失败会尝试备用账号。
-5. 关闭开关会恢复原 provider，保留期间对其他设置的修改；如网关配置项本身被其他程序改动，会拒绝覆盖并保留备份。关闭后同样重启 Codex。v0.3.0 创建的自定义 provider 会话仍需网关开启才能继续。
+5. 关闭开关会恢复原 provider，保留期间对其他设置的修改；如网关配置项本身被其他程序改动，会拒绝覆盖并保留备份。关闭后新会话立刻直连；已经打开的会话不用重启，网关会把它们原样转给 Codex 自己登录的账号。v0.3.0 创建的自定义 provider 会话仍需网关开启才能继续。
 
-**使用期间保持 Tibot 运行。** 私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
+**网关由 macOS 常驻运行**（v0.4.29 起，「系统设置 → 通用 → 登录项」里显示为 Tibot），退出、更新或崩溃 Tibot 都不打断 Codex；Tibot 不在运行时额度不会刷新，网关按最后一次的账号池继续路由。网关帮不上忙时（读不到账号池、Codex 登录的账号没连到 Tibot、路由已关闭、Codex 调了网关不认识的接口），请求直接用 Codex 自己的登录发出，和没装 Tibot 一样。网关 10 秒没有响应时 Tibot 会把它重新拉起，30 秒仍没有响应就把 Codex 改回直连，网关恢复后再接回。私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
 
 网关是独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress）。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放。会话先留在第一次回答它的账号上，保住提示缓存；绑定保存在本机，网关重启后继续使用。这个账号额度用完、冷却或登录过期时，会话连同加密历史和压缩内容一起换到其他有额度的账号继续，换过去的第一次没有缓存，会多用一些额度。剩不到 5% 的号（任一额度窗口）先放着不用：新会话、绑在它上面的会话、哪怕它是「新会话优先」的号，都先换到额度更多的号；别的号都不到 5% 时才用它，Codex 自己登录的那个号最后用，免得它用完把 Codex 锁住。只有账号自己的拒绝（登录失效、额度用完、限速）才让它暂停；服务端出错时最多再换一个号试，谁都不暂停（同一个号一分钟内连着坏了三个不同会话才歇 30 秒）；网络或代理连不上时不换号，直接告诉 Codex「连不上服务，不是账号问题」，由 Codex 自己重试；请求本身的问题（比如上下文太长）原样交给 Codex 处理。服务返回的响应头（额度、模型目录版本等）原样带给 Codex。Codex 发消息前会先查自己登录的那个号，那个号用完时它直接锁住发送，消息到不了路由；这时 Tibot 面板会出「换到 X」按钮：点一下退出并重开 Codex，让它登录一个还有额度的号（正在跑的请求会被打断，点之前会提示）。原生云端/远程功能尚未完整验收。
 
@@ -116,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 ## 手动安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.28-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.29-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 App 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。装了 Codex 桌面（ChatGPT App）就自带 CLI，本版用其内置 CLI 0.165 验证；旧版 CLI 可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
@@ -157,7 +157,7 @@ swift test
 
 - 初次启动为空账号列表。自动路由在完成两步设置后自动开启；重置提醒、通知、开机启动和全局快捷键默认关闭，可在设置中启用。
 - 公开版标识为 `io.github.ruanjianjian.codex-accounts`，数据独立保存在 `~/Library/Application Support/CodexAccountsPublic/`。
-- 不自动导入其他应用的数据。自动路由会修改默认 Codex 的 provider 配置（关闭或退出 Tibot 时恢复），但不修改登录文件。WebKit 的 X 登录态和应用偏好也使用公开版独立身份。
+- 不自动导入其他应用的数据。自动路由会修改默认 Codex 的 provider 配置（关闭时恢复；退出 Tibot 不恢复，常驻网关照常转发），但不修改登录文件。WebKit 的 X 登录态和应用偏好也使用公开版独立身份。
 - 若已有个人构建，可同时保留；不要给两者配置相同快捷键。不同 Codex 客户端同时发起 OAuth 可能争用 localhost 回调端口，请按次完成授权。
 - 账号菜单可重新连接或移除连接。登录失效时需要重新连接。
 
@@ -180,7 +180,13 @@ Tibo 预告重置时发系统通知（点开即原帖），时间只取帖子原
 
 ## 卸载
 
-先在公开版设置中关闭「自动账号路由」并重启 Codex，再关闭「登录 Mac 时启动」，按需从账号菜单移除账号连接，然后退出并将 **Tibot.app** 移到废纸篓。删除应用本身不会删除登录和缓存。如需清除，使用设置里的「打开本机数据目录」核对公开版目录后手动删除；X 网站数据由系统 WebKit 存储，应用重装后可能仍保留。不要删除其他客户端的目录或钥匙串条目。
+先在公开版设置中关闭「自动账号路由」并重启 Codex，再关闭「登录 Mac 时启动」，按需从账号菜单移除账号连接，然后退出并将 **Tibot.app** 移到废纸篓。最后停掉常驻网关：
+
+```bash
+launchctl bootout gui/$(id -u)/io.github.ruanjianjian.codex-accounts.gateway; rm -f ~/Library/LaunchAgents/io.github.ruanjianjian.codex-accounts.gateway.plist
+```
+
+删除应用本身不会删除登录和缓存。如需清除，使用设置里的「打开本机数据目录」核对公开版目录后手动删除；X 网站数据由系统 WebKit 存储，应用重装后可能仍保留。不要删除其他客户端的目录或钥匙串条目。
 
 ## 第三方组件
 
