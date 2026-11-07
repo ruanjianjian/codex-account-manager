@@ -47,14 +47,6 @@ func health(g *gateway, token, id string) int {
 }
 func TestActualMismatchAndRefreshAcrossRestart(t *testing.T) {
 	n, c, old := nativeFixture(t)
-	if err := n.validateDesktop(c); err != nil {
-		t.Fatal(err)
-	}
-	unknown := c
-	unknown.Clients = nil
-	if n.validateDesktop(unknown) == nil {
-		t.Fatal("unenrolled desktop accepted at startup")
-	}
 	g := newGateway(func() (config, error) { return c, nil }, "", func(event) {})
 	if got := health(g, old, "acct-two"); got != 401 {
 		t.Fatal("old implementation did not reproduce", got)
@@ -92,7 +84,7 @@ func TestNativeAdmissionSeparateFromRoutingAndRevocation(t *testing.T) {
 	if health(g, token, "acct-two") != 200 {
 		t.Fatal("paused client cannot authenticate")
 	}
-	updated, _, _ := n.authenticate(c, token, "acct-two")
+	updated, _ := n.authenticate(c, token, "acct-two")
 	if len(updated.Accounts) != 1 {
 		t.Fatal("paused account reintroduced")
 	}
@@ -121,6 +113,7 @@ func TestNativeRejectsForgedExpiredMismatchedAndUnsafe(t *testing.T) {
 		t.Fatal("expired token accepted")
 	}
 	os.Remove(n.cache) // test first observation, not an already-trusted historical hash
+	g.native = &nativeAuth{path: n.path, cache: n.cache}
 	putDesktop(t, n.path, "acct-one", token)
 	if health(g, token, "acct-two") != 401 {
 		t.Fatal("JWT/file identity mismatch accepted")

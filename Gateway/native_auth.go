@@ -31,19 +31,11 @@ type clientHash struct {
 type nativeAuth struct {
 	mu          sync.Mutex
 	path, cache string
-}
-
-func (n *nativeAuth) validateDesktop(c config) error {
-	a, err := desktopCredential(n.path)
-	if err != nil {
-		return err
-	}
-	for _, id := range c.Clients {
-		if id.AccountID == a.AccountID && id.ID != "" {
-			return nil
-		}
-	}
-	return errors.New("desktop account not enrolled")
+	// Digests of the logins seen (pool accounts and the desktop's), kept in memory and copied to cache, so a
+	// Codex window still holding a token from before a refresh, or from before a gateway restart, is recognized.
+	kept   map[string]clientHash
+	loaded bool
+	write  sync.Mutex
 }
 
 // Trust only owner-private regular files at the launch-time configured path.
@@ -115,42 +107,56 @@ func digestToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (n *nativeAuth) authenticate(c config, bearer, headerAccount string) (config, string, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+// authenticate names the connected account a bearer belongs to ("" when none) and puts the desktop's current
+// login in place of that account's older token. Files are read and written outside the lock, so a slow disk
+// holds up only the request that reads it; an unreadable or unwritable registry only means fewer logins are
+// recognized, and those go straight through on their own login.
+func (n *nativeAuth) authenticate(c config, bearer, headerAccount string) (config, string) {
 	allowed := map[string]string{}
 	for _, id := range c.Clients {
 		if id.ID != "" && id.AccountID != "" {
 			allowed[id.AccountID] = id.ID
 		}
 	}
+	// Re-read on every request: no refresh timer gap and no stale selection.json.
+	// Never write auth.json or refresh a token here. Codex remains its owner.
+	desktop, desktopErr := desktopCredential(n.path)
 	var history []clientHash
-	if b, err := readPrivate(n.cache); err == nil {
-		if json.Unmarshal(b, &history) != nil {
-			return c, "", errors.New("invalid client registry")
+	if !n.isLoaded() {
+		if b, err := readPrivate(n.cache); err == nil {
+			json.Unmarshal(b, &history)
 		}
-	} else if !os.IsNotExist(err) {
-		return c, "", err
 	}
 	now := float64(time.Now().Unix())
-	kept := map[string]clientHash{}
-	for _, h := range history {
-		if h.Expires > now && allowed[h.AccountID] != "" && len(h.Digest) == 64 {
-			kept[h.Digest] = h
+	n.mu.Lock()
+	if !n.loaded {
+		n.loaded, n.kept = true, map[string]clientHash{}
+		for _, h := range history {
+			if len(h.Digest) == 64 {
+				n.kept[h.Digest] = h
+			}
+		}
+	}
+	changed := false
+	for d, h := range n.kept {
+		if h.Expires <= now || allowed[h.AccountID] == "" {
+			delete(n.kept, d)
+			changed = true
 		}
 	}
 	remember := func(a account) {
 		if allowed[a.AccountID] != "" && a.Expires > now && a.Access != "" {
 			d := digestToken(a.Access)
-			kept[d] = clientHash{d, a.AccountID, a.Expires}
+			if old, ok := n.kept[d]; !ok || old.Expires != a.Expires {
+				changed = true
+			}
+			n.kept[d] = clientHash{d, a.AccountID, a.Expires}
 		}
 	}
 	for _, a := range c.Accounts {
 		remember(a)
 	}
-	// Re-read on every request: no refresh timer gap and no stale selection.json.
-	// Never write auth.json or refresh a token here. Codex remains its owner.
-	if desktop, err := desktopCredential(n.path); err == nil && allowed[desktop.AccountID] != "" {
+	if desktopErr == nil && allowed[desktop.AccountID] != "" {
 		remember(desktop)
 		c.Accounts = append([]account(nil), c.Accounts...)
 		for i := range c.Accounts {
@@ -160,46 +166,63 @@ func (n *nativeAuth) authenticate(c config, bearer, headerAccount string) (confi
 			}
 		}
 	}
-	var next []clientHash
-	for _, h := range kept {
-		next = append(next, h)
-	}
-	sort.Slice(next, func(i, j int) bool {
-		if next[i].Expires == next[j].Expires {
-			return next[i].Digest < next[j].Digest
+	if len(n.kept) > 256 {
+		for _, h := range n.sortedLocked()[256:] {
+			delete(n.kept, h.Digest)
 		}
-		return next[i].Expires > next[j].Expires
+	}
+	match := ""
+	if bearer != "" {
+		digest := digestToken(bearer)
+		for _, h := range n.kept {
+			if (headerAccount == "" || headerAccount == h.AccountID) && subtle.ConstantTimeCompare([]byte(digest), []byte(h.Digest)) == 1 {
+				match = allowed[h.AccountID]
+			}
+		}
+	}
+	n.mu.Unlock()
+	if changed {
+		n.save()
+	}
+	return c, match
+}
+func (n *nativeAuth) isLoaded() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.loaded
+}
+
+// Newest expiry first. Caller holds mu.
+func (n *nativeAuth) sortedLocked() []clientHash {
+	out := make([]clientHash, 0, len(n.kept))
+	for _, h := range n.kept {
+		out = append(out, h)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Expires == out[j].Expires {
+			return out[i].Digest < out[j].Digest
+		}
+		return out[i].Expires > out[j].Expires
 	})
-	if len(next) > 256 {
-		next = next[:256]
+	return out
+}
+
+// Copies the digests to the private cache file; one writer at a time, each writing the latest set.
+func (n *nativeAuth) save() {
+	n.write.Lock()
+	defer n.write.Unlock()
+	n.mu.Lock()
+	b, _ := json.Marshal(n.sortedLocked())
+	n.mu.Unlock()
+	f, err := os.CreateTemp(filepath.Dir(n.cache), ".client-auth-")
+	if err != nil {
+		return
 	}
-	b, _ := json.Marshal(next)
-	old, _ := json.Marshal(history)
-	if string(b) != string(old) {
-		f, err := os.CreateTemp(filepath.Dir(n.cache), ".client-auth-")
-		if err != nil {
-			return c, "", err
-		}
-		defer os.Remove(f.Name())
-		if _, err = f.Write(b); err == nil {
-			err = f.Sync()
-		}
-		closeErr := f.Close()
-		if err == nil {
-			err = closeErr
-		}
-		if err == nil {
-			err = os.Rename(f.Name(), n.cache)
-		}
-		if err != nil {
-			return c, "", err
-		}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(b); err == nil {
+		err = f.Sync()
 	}
-	digest := digestToken(bearer)
-	for _, h := range next {
-		if (headerAccount == "" || headerAccount == h.AccountID) && subtle.ConstantTimeCompare([]byte(digest), []byte(h.Digest)) == 1 {
-			return c, allowed[h.AccountID], nil
-		}
+	if closeErr := f.Close(); err == nil && closeErr == nil {
+		os.Rename(f.Name(), n.cache)
 	}
-	return c, "", nil
 }

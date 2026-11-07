@@ -135,6 +135,7 @@ func TestRealClientRoutesSealedConversationsAfterSwitch(t *testing.T) {
 		Clients: []clientIdentity{{"one", "acct-one"}, {"two", "acct-two"}}}
 	var reasons []string
 	authRejected := 0
+	direct := map[string]int{}
 	g := newGateway(func() (config, error) { mu.Lock(); defer mu.Unlock(); return pool, nil }, chatgpt, func(e event) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -143,6 +144,8 @@ func TestRealClientRoutesSealedConversationsAfterSwitch(t *testing.T) {
 			reasons = append(reasons, e.Reason)
 		case "local_auth_rejected":
 			authRejected++
+		case "direct":
+			direct[e.Reason]++
 		}
 	})
 	g.native = &nativeAuth{path: authPath, cache: filepath.Join(dir, "client-auth-hashes.json")}
@@ -238,16 +241,20 @@ func TestRealClientRoutesSealedConversationsAfterSwitch(t *testing.T) {
 	}
 	backend.mu.Unlock()
 
-	// Logged in inside Codex to an account the manager does not know: the gateway can only refuse.
-	// The menu-bar app restores the direct provider for this case instead of leaving Codex on 401s.
+	// Routing switched off in Tibot: Codex goes on its own login (acct-one), not the account routing would pick.
+	setPool(func(c *config) { c.Off = true; c.Accounts[0].Available, c.Accounts[1].Available = false, true })
+	expect("routing off goes on Codex's own login", run(gw, "routing off"), "reply-from-acct-one")
+	setPool(func(c *config) { c.Off = false })
+	expect("routing on again", run(gw, "routing on again"), "reply-from-acct-two")
+
+	// Logged in inside Codex to an account Tibot does not know: Codex keeps working on that login, straight to
+	// the service, where it used to get 401s until Tibot restored the direct provider.
 	os.WriteFile(authPath, fakeAuth("acct-three", three), 0600)
-	if r := run(gw, "unenrolled desktop login"); r.reply != "" || r.failure == "" {
-		t.Fatalf("unenrolled desktop login was served: %+v", r)
-	}
+	expect("unenrolled desktop login goes direct", run(gw, "unenrolled desktop login"), "reply-from-acct-three")
 	mu.Lock()
 	defer mu.Unlock()
-	if authRejected == 0 {
-		t.Fatal("unenrolled desktop was not refused by local auth")
+	if direct["routing_off"] == 0 || direct["unknown_login"] == 0 || authRejected != 0 {
+		t.Fatalf("direct=%v authRejected=%d", direct, authRejected)
 	}
 	if len(reasons) != 0 {
 		t.Fatalf("unexpected gateway rejections: %v", reasons)
