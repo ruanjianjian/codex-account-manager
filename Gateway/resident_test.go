@@ -3,12 +3,16 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -363,5 +367,279 @@ func TestCompactionWaitsLongerForItsFirstByte(t *testing.T) {
 	}
 	if g.slow.Transport.(*http.Transport).ResponseHeaderTimeout <= g.client.Transport.(*http.Transport).ResponseHeaderTimeout {
 		t.Fatal("compaction gets no more time")
+	}
+}
+
+// Codex opens a WebSocket on every turn and falls back to HTTP on 426. Stripped to a plain GET and sent direct,
+// it cost Codex 7 s of reconnect attempts per conversation (review of #36); it is refused before anything goes
+// direct, and never reaches the service.
+func TestAWebSocketIsRefusedBeforeAnythingGoesDirect(t *testing.T) {
+	up, got := recorder(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(405) })
+	n, c, token := nativeFixture(t)
+	stranger := localToken("acct-nine", "elsewhere", time.Now().Unix()+3600)
+	off := config{Key: c.Key, Off: true, Clients: c.Clients} // as Tibot writes it with routing off
+	for _, tc := range []struct {
+		name  string
+		pool  func() (config, error)
+		token string
+	}{
+		{"pool unreadable", func() (config, error) { return config{}, errors.New("missing") }, token},
+		{"login Tibot does not know", func() (config, error) { return c, nil }, stranger},
+		{"routing off", func() (config, error) { return off, nil }, token},
+	} {
+		g := newGateway(tc.pool, up.URL, func(event) {})
+		g.native = n
+		r := codexRequest("GET", "/backend-api/codex/responses", tc.token, "", nil)
+		r.Header.Set("Connection", "Upgrade")
+		r.Header.Set("Upgrade", "websocket")
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, r)
+		if w.Code != 426 {
+			t.Fatal(tc.name, w.Code)
+		}
+	}
+	if len(got()) != 0 {
+		t.Fatal("a WebSocket attempt reached the service as a plain GET")
+	}
+}
+
+// Routing off, with the pool exactly as Tibot writes it (no accounts, the connected identities kept): the desktop's
+// login goes direct as routing_off, and the logins the gateway remembers survive for when routing is back.
+func TestRoutingOffAsTibotWritesIt(t *testing.T) {
+	up, got := recorder(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	})
+	n, c, token := nativeFixture(t)
+	if _, id := n.authenticate(c, token, "acct-two"); id != "two" {
+		t.Fatal("fixture", id)
+	}
+	off := config{Key: c.Key, Off: true, Clients: c.Clients}
+	var events []event
+	g := newGateway(func() (config, error) { return off, nil }, up.URL, func(e event) { events = append(events, e) })
+	g.native = n
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, codexRequest("POST", "/backend-api/codex/responses", token, "acct-two", []byte(`{"input":"hi"}`)))
+	if w.Code != 200 || len(got()) != 1 || len(events) != 1 || events[0].Reason != "routing_off" {
+		t.Fatal(w.Code, got(), events)
+	}
+	b, _ := os.ReadFile(n.cache)
+	var kept []clientHash
+	json.Unmarshal(b, &kept)
+	if len(kept) == 0 || len(n.kept) == 0 {
+		t.Fatal("turning routing off erased the remembered logins")
+	}
+}
+
+// Tibot quit while both accounts were out; their windows have reset since and nobody wrote that down. An account
+// whose spent windows are past their reset is tried again; and with Tibot gone for a while, a pool that still
+// says every account is out does not keep Codex's own login from asking the service (review of #36).
+func TestAPoolTibotNoLongerUpdatesDoesNotLockCodexOut(t *testing.T) {
+	up, got := recorder(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	})
+	n, c, token := nativeFixture(t)
+	past := float64(time.Now().Add(-time.Hour).Unix())
+	for i := range c.Accounts {
+		c.Accounts[i].Available = false
+		c.Accounts[i].Reset = float64(time.Now().Add(72 * time.Hour).Unix())
+	}
+	c.Accounts[0].Back = past // its five-hour window reset an hour ago
+	var events []event
+	g := newGateway(func() (config, error) { return c, nil }, up.URL, func(e event) { events = append(events, e) })
+	g.native = n
+	if w := ask(g, `{"input":"hi"}`); w.Code != 200 || w.Header().Get("X-Codex-Accounts-Slot") != "one" {
+		t.Fatal("an account past its reset was not used:", w.Code)
+	}
+
+	c.Accounts[0].Back = float64(time.Now().Add(time.Hour).Unix())
+	fresh := c
+	fresh.written = time.Now()
+	g = newGateway(func() (config, error) { return fresh, nil }, up.URL, func(e event) { events = append(events, e) })
+	g.native = n
+	before := len(got())
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, codexRequest("POST", "/backend-api/codex/responses", token, "acct-two", []byte(`{"input":"hi"}`)))
+	if w.Code != 429 || len(got()) != before {
+		t.Fatal("a fresh pool's usage limit was not answered by the gateway:", w.Code)
+	}
+
+	stale := c
+	stale.written = time.Now().Add(-time.Hour)
+	events = nil
+	g = newGateway(func() (config, error) { return stale, nil }, up.URL, func(e event) { events = append(events, e) })
+	g.native = n
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, codexRequest("POST", "/backend-api/codex/responses", token, "acct-two", []byte(`{"input":"hi"}`)))
+	if w.Code != 200 || len(got()) != before+1 || got()[before].auth != "Bearer "+token {
+		t.Fatal("Codex's own login was kept from the service by an old pool:", w.Code)
+	}
+	if e := events[len(events)-2]; e.Kind != "direct" || e.Reason != "pool_stale" {
+		t.Fatalf("%+v", events)
+	}
+	// Tibot's own key never goes direct: it gets the gateway's answer.
+	if w := ask(g, `{"input":"hi"}`); w.Code != 429 {
+		t.Fatal(w.Code)
+	}
+}
+
+// A conversation the gateway served on another account, continued direct: that account's turn state stays behind.
+func TestADirectRequestDropsAnotherAccountsTurnState(t *testing.T) {
+	var states []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		states = append(states, r.Header.Get("X-Codex-Turn-State"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, good)
+	}))
+	defer up.Close()
+	n, c, token := nativeFixture(t)
+	off := config{Key: c.Key, Off: true, Clients: c.Clients}
+	g := newGateway(func() (config, error) { return off, nil }, up.URL, func(event) {})
+	g.native = n
+	g.remember("served-on-one", "one")
+	g.remember("served-on-two", "two")
+	for _, session := range []string{"served-on-one", "served-on-two", "never-routed"} {
+		r := codexRequest("POST", "/backend-api/codex/responses", token, "acct-two", []byte(`{"input":"hi"}`))
+		r.Header.Set("session-id", session)
+		r.Header.Set("X-Codex-Turn-State", "state")
+		g.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	if strings.Join(states, ",") != ",state,state" {
+		t.Fatal(states)
+	}
+}
+
+// Tibot's event stream works when the pool cannot be read (the key file stands in), so Tibot does not restart a
+// gateway that is serving Codex directly.
+func TestTibotsEndpointsWorkWithoutAPool(t *testing.T) {
+	dir, _ := filepath.EvalSymlinks(t.TempDir()) // the key file is trusted only at its real path
+	key := strings.Repeat("c", 64)
+	os.WriteFile(filepath.Join(dir, "local.key"), []byte(key), 0600)
+	g := newGateway(func() (config, error) { return config{}, errors.New("missing") }, "", func(event) {})
+	g.keyFile = filepath.Join(dir, "local.key")
+	front := httptest.NewServer(g)
+	defer front.Close()
+	for token, want := range map[string]int{key: 200, strings.Repeat("d", 64): 401} {
+		q, _ := http.NewRequest("GET", front.URL+"/tibot/events", nil)
+		q.Header.Set("Authorization", "Bearer "+token)
+		res, err := http.DefaultClient.Do(q)
+		if err != nil || res.StatusCode != want {
+			t.Fatal(token[:1], err, res)
+		}
+		res.Body.Close()
+	}
+}
+
+// A gateway whose requests are stuck on the shared lock stops pinging, so Tibot notices and restarts it.
+func TestPingsStopWhileRequestsAreStuck(t *testing.T) {
+	old := eventsPing
+	eventsPing = 30 * time.Millisecond
+	defer func() { eventsPing = old }()
+	g := newGateway(func() (config, error) { return pool(), nil }, "", func(event) {})
+	front := httptest.NewServer(g)
+	defer front.Close()
+	q, _ := http.NewRequest("GET", front.URL+"/tibot/events", nil)
+	q.Header.Set("Authorization", "Bearer "+pool().Key)
+	res, err := http.DefaultClient.Do(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	pings := make(chan struct{}, 64)
+	go func() {
+		sc := bufio.NewScanner(res.Body)
+		for sc.Scan() {
+			if sc.Text() == ": ping" {
+				pings <- struct{}{}
+			}
+		}
+	}()
+	<-pings
+	g.mu.Lock()
+	time.Sleep(60 * time.Millisecond)
+	for len(pings) > 0 {
+		<-pings
+	}
+	select {
+	case <-pings:
+		t.Fatal("pinged while the lock was stuck")
+	case <-time.After(200 * time.Millisecond):
+	}
+	g.mu.Unlock()
+	select {
+	case <-pings:
+	case <-time.After(time.Second):
+		t.Fatal("no ping after the lock came back")
+	}
+	g.hub.close()
+}
+
+// launchd stops the agent with SIGTERM (a plist change, logout). The process waits for the request in flight
+// instead of exiting at once (review of #36: it exited 3 ms after SIGTERM).
+func TestSIGTERMWaitsForTheRequestInFlight(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the gateway")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "AccountsGateway")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatal(string(out))
+	}
+	key := strings.Repeat("ab", 32)
+	cfg := filepath.Join(dir, "pool.json")
+	b, _ := json.Marshal(config{Key: key})
+	os.WriteFile(cfg, b, 0600)
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := "127.0.0.1:" + strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	ln.Close()
+	cmd := exec.Command(bin, "--config", cfg, "--listen", addr)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan time.Time, 1)
+	go func() { cmd.Wait(); exited <- time.Now() }()
+	defer cmd.Process.Kill()
+	for i := 0; ; i++ {
+		if c, err := net.Dial("tcp", addr); err == nil {
+			c.Close()
+			break
+		}
+		if i > 200 {
+			t.Fatal("gateway did not listen")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	pr, pw := io.Pipe()
+	q, _ := http.NewRequest("POST", "http://"+addr+"/backend-api/codex/responses", pr)
+	q.Header.Set("Authorization", "Bearer "+key)
+	answered := make(chan int, 1)
+	go func() {
+		res, err := http.DefaultClient.Do(q)
+		if err != nil {
+			answered <- 0
+			return
+		}
+		io.ReadAll(res.Body)
+		res.Body.Close()
+		answered <- res.StatusCode
+	}()
+	pw.Write([]byte(`{"input":"still arriving`))
+	time.Sleep(300 * time.Millisecond)
+	cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-exited:
+		t.Fatal("exited with a request in flight")
+	case <-time.After(time.Second):
+	}
+	pw.Write([]byte(`"}`))
+	pw.Close()
+	if code := <-answered; code != 503 { // no account in this pool: the gateway's own answer, delivered whole
+		t.Fatal("the request in flight got", code)
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("did not exit once the request was done")
 	}
 }

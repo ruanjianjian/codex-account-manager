@@ -45,4 +45,16 @@ final class GatewayAgentTests: XCTestCase {
         let on = try JSONSerialization.jsonObject(with: JSONEncoder().encode(GatewayPool(key: "k", preferred: "", accounts: []))) as? [String: Any]
         XCTAssertEqual(on?["off"] as? Bool, false)
     }
+
+    /// The gateway tries a spent account again once every spent window has reset, even with Tibot not running.
+    func testBackIsWhenEverySpentWindowHasReset() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let fiveHours = QuotaWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: 1_003_600)
+        let weekly = QuotaWindow(usedPercent: 40, windowDurationMins: 10080, resetsAt: 1_500_000)
+        XCTAssertEqual(GatewayAccount.back([fiveHours, weekly], now: now), 1_003_600, "the five-hour window, not the weekly reset")
+        let weeklySpent = QuotaWindow(usedPercent: 100, windowDurationMins: 10080, resetsAt: 1_500_000)
+        XCTAssertEqual(GatewayAccount.back([fiveHours, weeklySpent], now: now), 1_500_000, "both must have reset")
+        XCTAssertEqual(GatewayAccount.back([weekly], now: now), 0, "nothing spent")
+        XCTAssertEqual(GatewayAccount.back([QuotaWindow(usedPercent: 100, windowDurationMins: 300)], now: now), 0, "reset time unknown")
+    }
 }

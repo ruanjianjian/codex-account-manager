@@ -29,8 +29,9 @@ import AccountCore
         let data = try JSONEncoder().encode(GatewayPool(key: key, preferred: preferred, accounts: accounts, clients: clients, off: off))
         try PrivateAtomicFile.write(data, to: agent.pool)
     }
-    /// Routing off: no account tokens on disk, and Codex's own login goes straight through.
-    func saveOff() throws { try save(accounts: [], preferred: "", clients: [], off: true) }
+    /// Routing off: no account tokens on disk, and Codex's own login goes straight through. The connected
+    /// identities stay, so the gateway keeps recognizing those logins for when routing is back.
+    func saveOff(clients: [GatewayClientIdentity]) throws { try save(accounts: [], preferred: "", clients: clients, off: true) }
     private func loadKey() throws {
         guard key.isEmpty else { return }
         let keyFile = root.appendingPathComponent("local.key")
@@ -45,6 +46,8 @@ import AccountCore
     /// Installs or updates the agent and starts watching it. A new binary takes over once no reply is in flight.
     func start() throws {
         try loadKey()
+        // Watch first: a gateway already running keeps being seen even if updating its agent fails.
+        watch()
         let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/AccountsGateway")
         guard let binary = try? Data(contentsOf: bundled) else { throw GatewayConfigurationError.unavailable }
         let fm = FileManager.default
@@ -74,12 +77,13 @@ import AccountCore
             if loaded { _ = Self.run("/bin/launchctl", ["bootout", service]) }
             let boot = Self.run("/bin/launchctl", ["bootstrap", "gui/\(getuid())", agent.plistURL.path])
             if boot.status != 0 && Self.run("/bin/launchctl", ["print", service]).status != 0 {
-                throw boot.output.contains("disabled") || boot.status == 5 ? GatewayConfigurationError.disabled : GatewayConfigurationError.unavailable
+                let disabled = Self.run("/bin/launchctl", ["print-disabled", "gui/\(getuid())"]).output
+                    .contains("\"\(agent.label)\" => disabled")
+                throw disabled ? GatewayConfigurationError.disabled : GatewayConfigurationError.unavailable
             }
         } else if newBinary {
             restartWhenIdle(service)
         }
-        watch()
     }
     /// The program other than the gateway listening on its port, if any: the gateway cannot start while it does.
     func portHolder() -> String? {

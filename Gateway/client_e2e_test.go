@@ -49,6 +49,8 @@ type fakeBackend struct {
 	tokens map[string]string
 	sealed []string
 	n      int
+	// WebSocket attempts that arrived stripped to a plain GET: each costs Codex seconds of reconnects.
+	plainGets int
 }
 
 func (f *fakeBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +67,11 @@ func (f *fakeBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Header.Get("Upgrade") != "":
 		w.WriteHeader(426)
+	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/responses"):
+		f.mu.Lock()
+		f.plainGets++
+		f.mu.Unlock()
+		w.WriteHeader(405)
 	case strings.HasSuffix(r.URL.Path, "/wham/accounts/check"):
 		// A dead HTTPS origin: if a request were ever workspace-bound it would fail locally.
 		fmt.Fprintf(w, `{"accounts":[{"id":%q,"plan_type":"pro","workspace_backend_origin":"https://127.0.0.1:9/","account_routing_override":"NO_CONSTRAINT","structure":"personal"}],"account_ordering":[%q]}`, acct, acct)
@@ -258,5 +265,8 @@ func TestRealClientRoutesSealedConversationsAfterSwitch(t *testing.T) {
 	}
 	if len(reasons) != 0 {
 		t.Fatalf("unexpected gateway rejections: %v", reasons)
+	}
+	if backend.plainGets != 0 {
+		t.Fatalf("%d WebSocket attempts reached the service as plain GETs", backend.plainGets)
 	}
 }

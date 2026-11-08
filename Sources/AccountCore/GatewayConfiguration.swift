@@ -141,12 +141,21 @@ public struct GatewayAccount: Codable {
     public let available: Bool
     public let reset: Double
     public let low: Bool
-    public init(id: String, credential: DesktopCredential, available: Bool, reset: Double, low: Bool = false) throws {
+    /// When every spent window has reset (0 when none is spent or a reset time is unknown): the gateway tries the
+    /// account again past it, even while Tibot is not running to say it came back.
+    public let back: Double
+    public init(id: String, credential: DesktopCredential, available: Bool, reset: Double, low: Bool = false, back: Double = 0) throws {
         let raw = try JSONSerialization.jsonObject(with: credential.data) as? [String: Any]
         guard let token = (raw?["tokens"] as? [String: Any])?["access_token"] as? String else { throw GatewayConfigurationError.credentials }
         guard let exp = JWTClaims.decode(token)?["exp"] as? Double else { throw GatewayConfigurationError.credentials }
         self.id = id; self.accountID = credential.accountID; self.access = token; self.expires = exp
-        self.available = available; self.reset = reset; self.low = low
+        self.available = available; self.reset = reset; self.low = low; self.back = back
+    }
+    /// The moment the spent windows have all reset; 0 if none is spent or one has no reset time.
+    public static func back(_ windows: [QuotaWindow], now: Date = Date()) -> Double {
+        let spent = windows.filter { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
+        guard !spent.isEmpty, spent.allSatisfy({ $0.resetDate != nil }) else { return 0 }
+        return spent.compactMap { $0.resetDate?.timeIntervalSince1970 }.max() ?? 0
     }
 }
 

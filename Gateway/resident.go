@@ -5,6 +5,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -40,7 +42,8 @@ var directOwned = headerSet("Host", "Proxy-Authorization")
 
 // direct sends a Codex request to the service on Codex's own login and streams the answer back untouched.
 // body nil: the client's body as it arrived (still encoded); otherwise the decoded body the gateway already read.
-func (g *gateway) direct(w http.ResponseWriter, r *http.Request, path string, body []byte, reason string) {
+// slot: the connected account that login belongs to ("" unknown).
+func (g *gateway) direct(w http.ResponseWriter, r *http.Request, path string, body []byte, reason, slot string) {
 	started := time.Now()
 	var reader io.Reader = r.Body
 	if body != nil {
@@ -56,13 +59,23 @@ func (g *gateway) direct(w http.ResponseWriter, r *http.Request, path string, bo
 		return
 	}
 	copyHeader(q.Header, r.Header, directOwned)
+	// A conversation the gateway routed to another account carries that account's turn state; this login never
+	// issued it.
+	if owner := g.owner(headerSession(r), ""); owner != "" && owner != slot {
+		q.Header.Del("X-Codex-Turn-State")
+	}
 	if body != nil {
 		q.Header.Del("Content-Encoding")
 		q.ContentLength = int64(len(body))
 	} else {
 		q.ContentLength = r.ContentLength
 	}
-	res, err := g.clientFor(path).Do(q)
+	// Only a reply stream starts at once; anything else gets the long wait Codex itself would give it.
+	client := g.slow
+	if path == "/responses" {
+		client = g.client
+	}
+	res, err := client.Do(q)
 	if err != nil {
 		if r.Context().Err() == nil {
 			g.unreachable(w, r, q, "", err, started)
@@ -97,6 +110,39 @@ func (g *gateway) direct(w http.ResponseWriter, r *http.Request, path string, bo
 			panic(http.ErrAbortHandler)
 		}
 	}
+}
+
+func headerSession(r *http.Request) string {
+	for _, h := range []string{"session-id", "thread-id", "x-codex-session-id"} {
+		if v := r.Header.Get(h); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// The caller is Tibot: the pool's key, or the key file when the pool cannot be read.
+func (g *gateway) isTibot(key string, c config, poolErr error) bool {
+	want := c.Key
+	if poolErr != nil || want == "" {
+		if g.keyFile == "" {
+			return false
+		}
+		b, err := readPrivate(g.keyFile)
+		if err != nil {
+			return false
+		}
+		want = strings.TrimSpace(string(b))
+	}
+	return len(want) >= 32 && subtle.ConstantTimeCompare([]byte(key), []byte(want)) == 1
+}
+
+// The request path's shared state still answers. Pings go out only after it, so a gateway whose requests hang
+// stops pinging and Tibot restarts it.
+func (g *gateway) probe() {
+	g.mu.Lock()
+	g.mu.Unlock()
+	g.config()
 }
 
 // Tibot's subscribers to the events. A subscriber that falls behind loses events; nobody waits for it.
@@ -193,6 +239,7 @@ func (g *gateway) events(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ping.C:
+			g.probe()
 			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
 				return
 			}
@@ -210,8 +257,16 @@ func (g *gateway) drain(s *http.Server) {
 	for g.inflight.Load() > 0 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	g.hub.close()
-	s.Close()
+	shutdown(s, g, 30*time.Second)
 }
 
 var drainLimit = 10 * time.Minute
+
+// Stops taking connections, ends Tibot's event streams, and waits up to wait for every reply in flight to be
+// written out (a request that arrived after the last check included).
+func shutdown(s *http.Server, g *gateway, wait time.Duration) {
+	g.hub.close()
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	s.Shutdown(ctx)
+}

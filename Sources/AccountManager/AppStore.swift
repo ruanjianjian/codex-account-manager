@@ -273,7 +273,6 @@ enum SlotStatus: Equatable {
         let desktopURL = sharedDesktop.home.appendingPathComponent("auth.json")
         // A desktop login Tibot does not know is fine: the gateway sends it straight through on its own login.
         let desktopData = desktopURL.standardizedFileURL == desktopURL.resolvingSymlinksInPath() ? try? Data(contentsOf: desktopURL) : nil
-        let identities = saved.accounts.compactMap { slot in slot.expectedAccountID.map { GatewayClientIdentity(id: slot.id, accountID: $0) } }
         var accounts: [GatewayAccount] = []
         for slot in saved.accounts {
             guard let expected = slot.expectedAccountID else { continue }
@@ -285,9 +284,13 @@ enum SlotStatus: Equatable {
             let windows = slot.snapshot?.rates.windows ?? []
             let spent = windows.contains { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
             if let value = try? GatewayAccount(id: slot.id, credential: credential, available: !spent, reset: windows.quotaReset ?? 0,
-                                               low: RoutingReserve.low(windows, now: now)) { accounts.append(value) }
+                                               low: RoutingReserve.low(windows, now: now), back: GatewayAccount.back(windows, now: now)) { accounts.append(value) }
         }
-        try gateway.save(accounts: accounts, preferred: gatewayPreferred, clients: identities)
+        try gateway.save(accounts: accounts, preferred: gatewayPreferred, clients: gatewayIdentities)
+    }
+    /// The connected accounts' identities (no tokens): which logins the gateway may recognize as Tibot's.
+    private var gatewayIdentities: [GatewayClientIdentity] {
+        saved.accounts.compactMap { slot in slot.expectedAccountID.map { GatewayClientIdentity(id: slot.id, accountID: $0) } }
     }
     func setGatewayEnabled(_ enabled: Bool) {
         guard !preview, persistenceEnabled else { return }
@@ -297,8 +300,9 @@ enum SlotStatus: Equatable {
                     guard loginSlotID == nil, launchingDesktop.isEmpty else { throw GatewayConfigurationError.unavailable }
                     try updateGatewayPool(); try gateway.start()
                 } catch {
-                    // A gateway that already serves keeps serving; otherwise do not leave Codex on a dead port.
-                    if !gatewayReady { fallBackToDirect(error.localizedDescription) }
+                    // The agent may still be running and answer in a moment: the 30-second rule in tick decides
+                    // whether Codex goes direct, not this failure.
+                    if !gatewayReady, gatewayDownSince == nil { gatewayDownSince = Date() }
                     throw error
                 }
                 if gatewayReady { try gateway.install(); gatewayCaption = restingGatewayCaption }
@@ -306,7 +310,7 @@ enum SlotStatus: Equatable {
             } else {
                 // New chats go direct; chats already open still reach the gateway, which now sends them straight
                 // through on Codex's own login, so nothing needs a restart.
-                try gateway.configuration.restore(); try? gateway.saveOff()
+                try gateway.configuration.restore(); try? gateway.saveOff(clients: gatewayIdentities)
                 routingActivity.receive(.init(kind: "stopped")); gatewayAccount = nil
                 gatewayCaption = L("已关闭 · Codex 用它自己登录的账号，已打开的会话照常可用", "Off · Codex uses its own signed-in account; open chats keep working")
             }
@@ -1435,7 +1439,9 @@ enum SlotStatus: Equatable {
         } catch { banner = L("登录时启动未设置成功，可在系统设置 → 通用 → 登录项中添加 Tibot。", "Could not turn on Open at login. Add Tibot in System Settings → General → Login Items.") }
     }
     func shutdown() {
-        // The gateway is launchd's and keeps serving Codex while Tibot is gone, on the pool written last.
+        // The gateway is launchd's and keeps serving Codex while Tibot is gone, on the pool written last. One that
+        // is not answering now has nobody left to notice, so Codex goes direct until Tibot is back.
+        if gatewayEnabled && !gatewayReady { try? gateway.configuration.restore() }
         gateway.stopWatching()
         personalXTask?.cancel(); xBrowser?.stop()
         timer?.invalidate(); resetCheckTask?.cancel()
