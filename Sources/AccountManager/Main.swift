@@ -329,10 +329,20 @@ import AccountCore
     func applicationWillTerminate(_ notification: Notification) { interaction.stop(); hotKey.stop(); store.shutdown() }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) { completionHandler([.banner, .sound]) }
     /// A reset notification opens Tibo's original post; only a validated x.com/thsottiaux link is followed.
+    /// The notice that Codex's own account is out switches Codex's login.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let text = response.notification.request.content.userInfo["url"] as? String, let url = TiboPostLink.parse(text)?.url {
+        let info = response.notification.request.content.userInfo
+        if info[CodexLoginSwitch.noticeFlag] as? Bool == true {
+            if response.actionIdentifier != UNNotificationDismissActionIdentifier {
+                Task { @MainActor in self.switchCodexLoginFromNotice() }
+            }
+        } else if let text = info["url"] as? String, let url = TiboPostLink.parse(text)?.url {
             DispatchQueue.main.async { NSWorkspace.shared.open(url) }
         }
         completionHandler()
+    }
+    /// Nothing to switch to any more (the account reset, or no other has quota): the panel shows where things stand.
+    private func switchCodexLoginFromNotice() {
+        Task { if await !store.switchCodexLoginFromNotice() { showWidget() } }
     }
 }

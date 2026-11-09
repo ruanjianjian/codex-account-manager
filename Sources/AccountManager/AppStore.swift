@@ -414,6 +414,8 @@ enum SlotStatus: Equatable {
             let alert = NSAlert(); alert.messageText = L("把 Codex 换到 \(target.displayName)？", "Switch Codex to \(target.displayName)?")
             alert.informativeText = L("Codex 会退出再打开。现在有 \(running) 个请求在跑，Codex 里的会被打断。", "Codex quits and opens again. \(running) request\(running == 1 ? " is" : "s are") running now; the ones in Codex will be cut off.")
             alert.addButton(withTitle: L("换号", "Switch")); alert.addButton(withTitle: L("取消", "Cancel"))
+            // Asked from a notification, Tibot is not the active app: bring the question to the front.
+            NSApp.activate(ignoringOtherApps: true)
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         let outgoing = slot(from.slotID)?.displayName ?? ""
@@ -452,11 +454,19 @@ enum SlotStatus: Equatable {
             _ = try? await NSWorkspace.shared.openApplication(at: app, configuration: configuration)
         }
     }
-    /// Says once per used-up window that Codex itself is locked, and how to get out.
+    /// The out-of-quota notice was clicked. The accounts may have moved since it was posted, so Codex goes to the
+    /// account that keeps it unlocked longest now. false: nothing to switch to any more.
+    func switchCodexLoginFromNotice() async -> Bool {
+        guard let move = codexLoginSwitch else { return false }
+        await switchCodexLogin(to: move.to.id)
+        return true
+    }
+    /// Says once per used-up window that Codex itself is locked; the notification switches Codex when clicked.
     private func noticeCodexLoginOut() {
         guard let move = codexLoginSwitch,
-              let reset = move.from.snapshot?.rates.windows.filter({ ($0.remaining ?? 100) <= 0 }).compactMap(\.resetsAt).max() else { return }
-        remind(move.from.id, key: "codex-login-out-\(Int(reset))", text: L("Codex 登录的 \(move.from.displayName) 没额度了，Codex 会在发出前拦住新消息，路由收不到。在 Tibot 面板点「换到 \(move.to.displayName)」就能继续。", "Codex is signed in to \(move.from.displayName), which is out, so Codex holds new messages back before routing sees them. Click “Switch to \(move.to.displayName)” in the Tibot panel to keep going."))
+              let reset = move.from.snapshot?.rates.windows.filter({ ($0.remaining ?? 100) <= 0 }).compactMap(\.resetsAt).max(),
+              let key = CodexLoginSwitch.noticeKey(reset: reset, noticed: move.from.reminderKeys) else { return }
+        remind(move.from.id, key: key, notice: CodexLoginSwitch.notice(from: move.from.displayName, to: move.to.displayName), text: L("Codex 登录的 \(move.from.displayName) 没额度了，Codex 会在发出前拦住新消息，路由收不到。在 Tibot 面板点「换到 \(move.to.displayName)」就能继续。", "Codex is signed in to \(move.from.displayName), which is out, so Codex holds new messages back before routing sees them. Click “Switch to \(move.to.displayName)” in the Tibot panel to keep going."))
     }
     var mascotAccounts: [Mascot.Account] {
         saved.accounts.map { Mascot.Account(id: $0.id, name: $0.displayName, windows: $0.snapshot?.rates.windows ?? []) }
@@ -1074,13 +1084,21 @@ enum SlotStatus: Equatable {
         saved.events.insert(ActivityEntry(text), at: 0)
         saved.events = Array(saved.events.prefix(50)); persist()
     }
-    private func remind(_ id: String, key: String, text: String) {
+    /// notice: a notification that switches Codex's login when clicked, in place of the plain text.
+    private func remind(_ id: String, key: String, notice: (body: String, button: String)? = nil, text: String) {
         guard let i = index(id), !saved.accounts[i].reminderKeys.contains(key) else { return }
         saved.accounts[i].reminderKeys.append(key)
         saved.accounts[i].reminderKeys = Array(saved.accounts[i].reminderKeys.suffix(120))
         record(text)
         if saved.notificationsEnabled {
-            let content = UNMutableNotificationContent(); content.title = "Tibot"; content.body = text
+            let content = UNMutableNotificationContent(); content.title = "Tibot"; content.body = notice?.body ?? text
+            if let notice {
+                UNUserNotificationCenter.current().setNotificationCategories([UNNotificationCategory(
+                    identifier: CodexLoginSwitch.noticeCategory,
+                    actions: [UNNotificationAction(identifier: CodexLoginSwitch.noticeAction, title: notice.button)], intentIdentifiers: [])])
+                content.categoryIdentifier = CodexLoginSwitch.noticeCategory
+                content.userInfo = [CodexLoginSwitch.noticeFlag: true]
+            }
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "\(id)-\(key)", content: content, trigger: nil))
         }
     }
