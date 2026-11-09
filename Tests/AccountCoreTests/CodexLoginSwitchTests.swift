@@ -32,4 +32,17 @@ final class CodexLoginSwitchTests: XCTestCase {
         XCTAssertNil(CodexLoginSwitch.target(desktop: out, others: [("b", try rates(weekly: 100)), ("c", nil)], now: now))
         XCTAssertNil(CodexLoginSwitch.target(desktop: out, others: [], now: now))
     }
+    /// The same used-up window, read again a few seconds later, gets no second notice.
+    func testOneNoticePerUsedUpWindow() {
+        XCTAssertEqual(CodexLoginSwitch.noticeKey(reset: 1_794_485_828, noticed: []), "codex-login-out-1794485828")
+        XCTAssertNil(CodexLoginSwitch.noticeKey(reset: 1_794_485_832, noticed: ["soon-x", "codex-login-out-1794485828"]))
+        // A later window that runs out is a new lock.
+        XCTAssertEqual(CodexLoginSwitch.noticeKey(reset: 1_795_090_628, noticed: ["codex-login-out-1794485828"]), "codex-login-out-1795090628")
+    }
+    func testTheNoticeSaysWhatAClickDoes() {
+        L10n.choice = .zh; defer { L10n.choice = .system }
+        let notice = CodexLoginSwitch.notice(from: "Simon", to: "Annaer")
+        XCTAssertEqual(notice.body, "Codex 登录的 Simon 没额度了，新消息发不出去。点这里换到 Annaer，Codex 会重开一次。")
+        XCTAssertEqual(notice.button, "换到 Annaer")
+    }
 }

@@ -2,7 +2,7 @@
 
 ## English
 
-Tibot is a local-first macOS menu-bar app for multiple Codex accounts. See each account's remaining quota and let a local gateway route Codex chats to an available account; an account under 5% left waits until no other has more. Codex checks the account it is signed in to before it sends anything; when that one is out while another still has quota, the panel offers **Switch to …**, which quits Codex, signs it in to that account and opens it again. When every account is out, Tibot uses one banked reset on the account with the longest wait, if that is 2 days or more (turn this off in **Settings → Resets**). **Requires macOS 14 or later and Apple silicon.** Sign in to Codex desktop before installing. Tibot switches to English automatically on Macs without Chinese anywhere in the preferred language list; you can change the app language in **Settings → Language**.
+Tibot is a local-first macOS menu-bar app for multiple Codex accounts. See each account's remaining quota and let a local gateway route Codex chats to an available account; an account under 5% left waits until no other has more. Codex checks the account it is signed in to before it sends anything; when that one is out while another still has quota, Tibot posts a notification (and the panel shows **Switch to …**); clicking it quits Codex, signs it in to that account and opens it again. When every account is out, Tibot uses one banked reset on the account with the longest wait, if that is 2 days or more (turn this off in **Settings → Resets**). **Requires macOS 14 or later and Apple silicon.** Sign in to Codex desktop before installing. Tibot switches to English automatically on Macs without Chinese anywhere in the preferred language list; you can change the app language in **Settings → Language**.
 
 **Paste this to your agent** (Claude Code, Codex, or similar):
 
@@ -45,7 +45,7 @@ Accounts and settings live in `~/Library/Application Support/CodexAccountsPublic
 
 A local-first macOS menu-bar app for multiple Codex accounts. macOS 菜单栏的多账号 Codex 工具：看清每个账号的额度，并让 Codex 自动挑有额度的账号用。
 
-**测试版 v0.4.29-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
+**测试版 v0.4.30-beta.1** · macOS 14+ · Apple 芯片 · MIT · [下载](https://github.com/ruanjianjian/codex-account-manager/releases)
 
 ## 一行安装
 
@@ -99,13 +99,13 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 **网关由 macOS 常驻运行**（v0.4.29 起，「系统设置 → 通用 → 登录项」里显示为 Tibot），退出、更新或崩溃 Tibot 都不打断 Codex；Tibot 不在运行时额度不会刷新，网关按最后一次的账号池继续路由。网关帮不上忙时（读不到账号池、Codex 登录的账号没连到 Tibot、路由已关闭、Codex 调了网关不认识的接口），请求直接用 Codex 自己的登录发出，和没装 Tibot 一样。网关 10 秒没有响应时 Tibot 会把它重新拉起，30 秒仍没有响应就把 Codex 改回直连，网关恢复后再接回；退出 Tibot 时网关不通，也会先改回直连。想关掉网关的后台运行，请先在 Tibot 里关闭自动路由，否则 Codex 会连不上本机端口。私有版本与公开版不能同时接管同一个默认 Codex 配置；先关闭另一版本的路由。
 
-网关是独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress）。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放。会话先留在第一次回答它的账号上，保住提示缓存；绑定保存在本机，网关重启后继续使用。这个账号额度用完、冷却或登录过期时，会话连同加密历史和压缩内容一起换到其他有额度的账号继续，换过去的第一次没有缓存，会多用一些额度。剩不到 5% 的号（任一额度窗口）先放着不用：新会话、绑在它上面的会话、哪怕它是「新会话优先」的号，都先换到额度更多的号；别的号都不到 5% 时才用它，Codex 自己登录的那个号最后用，免得它用完把 Codex 锁住。只有账号自己的拒绝（登录失效、额度用完、限速）才让它暂停；服务端出错时最多再换一个号试，谁都不暂停（同一个号一分钟内连着坏了三个不同会话才歇 30 秒）；网络或代理连不上时不换号，直接告诉 Codex「连不上服务，不是账号问题」，由 Codex 自己重试；请求本身的问题（比如上下文太长）原样交给 Codex 处理。服务返回的响应头（额度、模型目录版本等）原样带给 Codex。Codex 发消息前会先查自己登录的那个号，那个号用完时它直接锁住发送，消息到不了路由；这时 Tibot 面板会出「换到 X」按钮：点一下退出并重开 Codex，让它登录一个还有额度的号（正在跑的请求会被打断，点之前会提示）。原生云端/远程功能尚未完整验收。
+网关是独立实现的 Go 辅助进程（压缩协议依赖 klauspost/compress）。真实官方 CLI 的模型回复与终端工具调用已验证；官方 CLI 已验证直连创建会话后，经网关续聊能保留历史并执行工具。默认 Codex 桌面重启后的旧会话和 Fast 按钮显示仍待验收，先按实验功能使用。已输出内容/工具调用不会自动重放。会话先留在第一次回答它的账号上，保住提示缓存；绑定保存在本机，网关重启后继续使用。这个账号额度用完、冷却或登录过期时，会话连同加密历史和压缩内容一起换到其他有额度的账号继续，换过去的第一次没有缓存，会多用一些额度。剩不到 5% 的号（任一额度窗口）先放着不用：新会话、绑在它上面的会话、哪怕它是「新会话优先」的号，都先换到额度更多的号；别的号都不到 5% 时才用它，Codex 自己登录的那个号最后用，免得它用完把 Codex 锁住。只有账号自己的拒绝（登录失效、额度用完、限速）才让它暂停；服务端出错时最多再换一个号试，谁都不暂停（同一个号一分钟内连着坏了三个不同会话才歇 30 秒）；网络或代理连不上时不换号，直接告诉 Codex「连不上服务，不是账号问题」，由 Codex 自己重试；请求本身的问题（比如上下文太长）原样交给 Codex 处理。服务返回的响应头（额度、模型目录版本等）原样带给 Codex。Codex 发消息前会先查自己登录的那个号，那个号用完时它直接锁住发送，消息到不了路由；这时 Tibot 会弹一条系统通知，点通知（或面板上的「换到 X」按钮）就退出并重开 Codex，让它登录一个还有额度的号（正在跑的请求会被打断，点之前会提示）。原生云端/远程功能尚未完整验收。
 
 网关连 ChatGPT 时和 Codex 一样走这台 Mac 的代理（先看 `https_proxy` 等环境变量，再看系统设置里的 HTTPS / SOCKS 代理，每 30 秒重读；自动代理 PAC 不支持），需要代理才能上 ChatGPT 的网络也能用。网关只监听本机，使用独立随机密钥；只导出短期 access token，沿用原采集进程管理 OAuth 刷新。网关凭据及配置备份位于数据目录 `gateway/`，禁止上传。详见 [网关说明](Gateway/README.md) 与 [验证记录](docs/VALIDATION.md)。
 
 ## 登录保存在本机文件，不用钥匙串
 
-- 点账号名称是「设为新会话优先」；自动路由未开时会先询问是否开启。只有 Codex 自己登录的号用完、而别的号还有额度时，面板才会出「换到 X」：Tibot 退出 Codex，把旧号最新的登录存回它自己的文件，再让 Codex 登录 X 并重新打开。
+- 点账号名称是「设为新会话优先」；自动路由未开时会先询问是否开启。只有 Codex 自己登录的号用完、而别的号还有额度时，Tibot 才弹「换到 X」的通知、面板上才出这个按钮：Tibot 退出 Codex，把旧号最新的登录存回它自己的文件，再让 Codex 登录 X 并重新打开。
 - 各账号的登录保存在数据目录的 `accounts/<id>/auth.json`（目录 700、文件 600），和 Codex 自己的 `~/.codex/auth.json` 一样：只有当前 macOS 用户能读写，**文件本身不加密，同一用户下运行的程序可能读取**。好处是安装、更新、自动更新都不会弹钥匙串授权框。
 - 以前用钥匙串保存登录的旧版本，第一次打开新版时会自动把登录搬到文件里：macOS 可能每个账号问一次是否允许，只此一次，之后不再访问钥匙串。读不出来的账号（比如点了拒绝）会提示重新连接，其他账号照常。
 - 当前用于桌面的账号不能直接重新连接或移除；请先在 Codex 里登录其他账号。
@@ -116,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/ruanjianjian/codex-account-manager/
 
 ## 手动安装下载版
 
-1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.29-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
+1. 在 [Releases](https://github.com/ruanjianjian/codex-account-manager/releases) 下载 `Codex-Accounts-v0.4.30-beta.1-macos-arm64.zip` 和 `SHA256SUMS.txt`。在同一目录执行 `shasum -a 256 -c SHA256SUMS.txt` 核对文件。
 2. 解压，将 App 拖入 `~/Applications`。若没有这个文件夹，可自己新建。
 3. 安装 [Google Chrome](https://www.google.com/chrome/) 到 `/Applications`，并安装官方 [Codex CLI](https://github.com/openai/codex)。装了 Codex 桌面（ChatGPT App）就自带 CLI，本版用其内置 CLI 0.165 验证；旧版 CLI 可能不支持 token 活动或 banked reset 字段，缺失时显示未知。
 4. 双击打开应用；若 macOS 拦截，请按下方「首次打开：手动放行」操作。启动后从菜单栏进入，点击右上角 `+`，自行完成 Codex 授权和必要的2FA。
