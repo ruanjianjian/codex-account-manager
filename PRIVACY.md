@@ -27,7 +27,7 @@ Tibot 读取默认 `~/.codex/auth.json` 判断桌面当前登录的是哪个账�
 
 ## 实验性本机网关
 
-主动启用后，本机 Codex 推理请求经回环地址的辅助进程转发到 ChatGPT Codex 服务，使用你连接的账号。网关读取应用导出的短期 access token，并在原生连接模式下读取启动时指定的桌面 auth.json；不刷新 OAuth、不读取钥匙串。pool.json、本机随机访问密钥、原配置备份保存在私有 gateway 目录，目录700、文件600，文件本身不加密。日志只记录时间、会话ID、账号槽位、状态及响应中的 token 计数，不记录提示词、工具正文或令牌。停用/退出会移除账号池快照；备份可能包含私有配置，禁止上传。
+主动启用后，本机 Codex 推理请求经回环地址的辅助进程转发到 ChatGPT Codex 服务，使用你连接的账号。网关读取应用导出的短期 access token，并在原生连接模式下读取启动时指定的桌面 auth.json；不刷新 OAuth、不读取钥匙串。pool.json、本机随机访问密钥、原配置备份保存在私有 gateway 目录，目录700、文件600，文件本身不加密。日志只记录时间、会话ID、账号槽位、状态及响应中的 token 计数，不记录提示词、工具正文或令牌。网关作为 launchd 用户代理常驻（`~/Library/LaunchAgents/io.github.ruanjianjian.codex-accounts.gateway.plist`，二进制副本在 gateway 目录），退出 Tibot 时保留账号池快照，供网关继续路由；停用路由会把快照清空为「路由关闭」。网关不认识的 Codex 登录、或无法使用账号池时，请求带着 Codex 自己的登录原样发往 Codex 服务，网关不附加任何账号。备份可能包含私有配置，禁止上传。
 
 网关在本机 session-accounts.json 保存会话与账号槽位的绑定；requests.jsonl 保存有大小上限的诊断记录。两者不包含聊天内容或访问令牌，仍属于私人使用记录，请勿上传。原生连接使用已连接账号的有效token作本机鉴权，不接受未知或过期token。
 

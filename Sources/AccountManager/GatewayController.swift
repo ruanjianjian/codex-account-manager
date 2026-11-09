@@ -1,88 +1,164 @@
 import AppKit
 import AccountCore
 
+/// Keeps the gateway installed as a launchd agent and watches it over its event stream. The gateway does not
+/// depend on Tibot: quitting, updating or a crash of Tibot leave Codex's requests served.
 @MainActor final class GatewayController {
     let root: URL
     let port: Int
-    private var process: Process?
+    let agent: GatewayAgent
     private var key = ""
-    private var generation = UUID()
+    private var watcher: Task<Void, Never>?
+    private var killedChildren = false
     var onEvent: ((GatewayActivityEvent) -> Void)?
-    var running: Bool { process?.isRunning == true }
+    /// The event stream is up: the gateway answers.
+    private(set) var running = false
     var configuration: GatewayConfiguration { GatewayConfiguration(home: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"), root: root) }
-    init(root: URL) { self.root = root.appendingPathComponent("gateway"); port = Bundle.main.bundleIdentifier?.contains("Public") == true || Bundle.main.bundleIdentifier?.contains("io.github") == true ? 18456 : 18455 }
-    func save(accounts: [GatewayAccount], preferred: String, clients: [GatewayClientIdentity]) throws {
+    init(root: URL) {
+        self.root = root.appendingPathComponent("gateway")
+        let bundleID = Bundle.main.bundleIdentifier ?? "io.github.ruanjianjian.codex-accounts"
+        port = bundleID.contains("Public") || bundleID.contains("io.github") ? 18456 : 18455
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        agent = GatewayAgent(bundleID: bundleID, directory: self.root, port: port,
+                             desktopAuth: home.appendingPathComponent(".codex/auth.json"),
+                             launchAgents: home.appendingPathComponent("Library/LaunchAgents"))
+    }
+    func save(accounts: [GatewayAccount], preferred: String, clients: [GatewayClientIdentity], off: Bool = false) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try loadKey()
+        let data = try JSONEncoder().encode(GatewayPool(key: key, preferred: preferred, accounts: accounts, clients: clients, off: off))
+        try PrivateAtomicFile.write(data, to: agent.pool)
+    }
+    /// Routing off: no account tokens on disk, and Codex's own login goes straight through. The connected
+    /// identities stay, so the gateway keeps recognizing those logins for when routing is back.
+    func saveOff(clients: [GatewayClientIdentity]) throws { try save(accounts: [], preferred: "", clients: clients, off: true) }
+    private func loadKey() throws {
+        guard key.isEmpty else { return }
         let keyFile = root.appendingPathComponent("local.key")
-        if key.isEmpty {
-            if FileManager.default.fileExists(atPath: keyFile.path) {
-                key = try String(contentsOf: keyFile, encoding: .utf8)
-                guard key.count == 64, key.allSatisfy({ $0.isHexDigit }) else { throw GatewayConfigurationError.unavailable }
-            } else {
-                key = UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-                try PrivateAtomicFile.write(Data(key.utf8), to: keyFile)
-            }
+        if FileManager.default.fileExists(atPath: keyFile.path) {
+            key = try String(contentsOf: keyFile, encoding: .utf8)
+            guard key.count == 64, key.allSatisfy({ $0.isHexDigit }) else { throw GatewayConfigurationError.unavailable }
+        } else {
+            key = UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            try PrivateAtomicFile.write(Data(key.utf8), to: keyFile)
         }
-        let data = try JSONEncoder().encode(GatewayPool(key: key, preferred: preferred, accounts: accounts, clients: clients))
-        try PrivateAtomicFile.write(data, to: root.appendingPathComponent("pool.json"))
     }
+    /// Installs or updates the agent and starts watching it. A new binary takes over once no reply is in flight.
     func start() throws {
-        guard !running else { return }
-        let binary = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/AccountsGateway")
-        guard FileManager.default.isExecutableFile(atPath: binary.path) else { throw GatewayConfigurationError.unavailable }
-        let p = Process(), out = Pipe(), err = Pipe()
-        p.executableURL = binary; p.arguments = ["--config", root.appendingPathComponent("pool.json").path, "--listen", "127.0.0.1:\(port)", "--desktop-auth", configuration.home.appendingPathComponent("auth.json").path]
-        p.environment = RPCClient.isolatedEnvironment(home: root, inherited: ProcessInfo.processInfo.environment)
-        p.standardOutput = out; p.standardError = err
-        process = p; let token = UUID(); generation = token
-        // The helper prints one fixed line before a fatal exit. Drain stderr so it can never block; keep only the tail.
-        let failure = StderrTail()
-        let port = port
-        p.terminationHandler = { [weak self] _ in
-            _ = failure.closed.wait(timeout: .now() + 1) // let the reader take the final line first
-            Task { @MainActor in
-                guard let self, self.generation == token else { return }
-                self.process = nil; self.onEvent?(.init(kind: "stopped", reason: Self.reason(failure.text, port: port)))
+        try loadKey()
+        // Watch first: a gateway already running keeps being seen even if updating its agent fails.
+        watch()
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/AccountsGateway")
+        guard let binary = try? Data(contentsOf: bundled) else { throw GatewayConfigurationError.unavailable }
+        let fm = FileManager.default
+        var newBinary = false
+        if (try? Data(contentsOf: agent.binary)) != binary {
+            let temp = root.appendingPathComponent(".AccountsGateway-\(UUID().uuidString)")
+            try binary.write(to: temp)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temp.path)
+            // A rename: the running gateway keeps its own file until it restarts on this one.
+            guard rename(temp.path, agent.binary.path) == 0 else { try? fm.removeItem(at: temp); throw GatewayConfigurationError.unavailable }
+            newBinary = true
+        }
+        let plist = try agent.plist()
+        let newPlist = (try? Data(contentsOf: agent.plistURL)) != plist
+        if newPlist {
+            try fm.createDirectory(at: agent.launchAgents, withIntermediateDirectories: true)
+            try plist.write(to: agent.plistURL, options: .atomic)
+        }
+        if !killedChildren {
+            // A gateway an older Tibot started as its child keeps the port until it exits.
+            killedChildren = true
+            _ = Self.run("/usr/bin/pkill", ["-f", agent.childPattern])
+        }
+        let service = "gui/\(getuid())/\(agent.label)"
+        let loaded = Self.run("/bin/launchctl", ["print", service]).status == 0
+        if newPlist || !loaded {
+            if loaded { _ = Self.run("/bin/launchctl", ["bootout", service]) }
+            let boot = Self.run("/bin/launchctl", ["bootstrap", "gui/\(getuid())", agent.plistURL.path])
+            if boot.status != 0 && Self.run("/bin/launchctl", ["print", service]).status != 0 {
+                let disabled = Self.run("/bin/launchctl", ["print-disabled", "gui/\(getuid())"]).output
+                    .contains("\"\(agent.label)\" => disabled")
+                throw disabled ? GatewayConfigurationError.disabled : GatewayConfigurationError.unavailable
             }
-        }
-        try p.run()
-        let errors = err.fileHandleForReading
-        DispatchQueue.global(qos: .utility).async {
-            while true { let chunk = errors.availableData; if chunk.isEmpty { break }; failure.append(chunk) }
-            failure.closed.signal()
-        }
-        let handle = out.fileHandleForReading
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            var buffer = Data()
-            while true {
-                let chunk = handle.availableData; if chunk.isEmpty { break }; buffer.append(chunk)
-                while let range = buffer.firstRange(of: Data([10])) {
-                    let line = buffer[..<range.lowerBound]; buffer.removeSubrange(...range.lowerBound)
-                    guard let event = try? JSONDecoder().decode(GatewayActivityEvent.self, from: line) else { continue }
-                    Task { @MainActor in guard self?.generation == token else { return }; self?.onEvent?(event) }
-                }
-            }
+        } else if newBinary {
+            restartWhenIdle(service)
         }
     }
-    nonisolated static func reason(_ stderr: String, port: Int) -> String {
-        if stderr.contains("port is already occupied") { return L("端口 \(port) 已被占用，可能另一版本的 Tibot 仍在运行", "Port \(port) is in use; another Tibot version may still be running") }
-        if stderr.contains("local credential registry unavailable") { return L("Codex 当前登录未连接到 Tibot，或桌面凭据已过期", "The account Codex is signed in to is not connected to Tibot, or the desktop login expired") }
-        if stderr.contains("configuration unavailable") { return L("网关账号池不可用", "The gateway's account pool is unavailable") }
-        return L("网关进程意外退出", "The gateway process exited unexpectedly")
+    /// The program other than the gateway listening on its port, if any: the gateway cannot start while it does.
+    func portHolder() -> String? {
+        let pids = Self.run("/usr/sbin/lsof", ["-nP", "-t", "-iTCP:\(port)", "-sTCP:LISTEN"]).output.split(separator: "\n")
+        for pid in pids {
+            let name = URL(fileURLWithPath: Self.run("/bin/ps", ["-o", "comm=", "-p", String(pid)]).output.trimmingCharacters(in: .whitespacesAndNewlines)).lastPathComponent
+            if !name.isEmpty && name != "AccountsGateway" { return name }
+        }
+        return nil
     }
-    func install() throws { try configuration.install(key: key, port: port) }
-    func stop(restore: Bool) throws {
-        if restore { try configuration.restore() }
-        generation = UUID(); if process?.isRunning == true { process?.terminate() }; process = nil
-        // An access-token snapshot is unnecessary while stopped.
-        try? FileManager.default.removeItem(at: root.appendingPathComponent("pool.json"))
+    /// Brings back a gateway that stays away: loads the agent again if something unloaded it, otherwise restarts
+    /// it (a hang launchd cannot see).
+    func revive() {
+        let service = "gui/\(getuid())/\(agent.label)"
+        if Self.run("/bin/launchctl", ["print", service]).status == 0 { _ = Self.run("/bin/launchctl", ["kickstart", "-k", service]) }
+        else { try? start() }
     }
-}
+    private func restartWhenIdle(_ service: String) {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/tibot/restart")!)
+        request.httpMethod = "POST"; request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        Task {
+            let accepted = (try? await Self.session.data(for: request)).map { ($0.1 as? HTTPURLResponse)?.statusCode == 202 } ?? false
+            if !accepted { _ = Self.run("/bin/launchctl", ["kickstart", "-k", service]) }
+        }
+    }
+    func install() throws { try loadKey(); try configuration.install(key: key, port: port) }
+    func stopWatching() { watcher?.cancel(); watcher = nil; running = false }
 
-private final class StderrTail: @unchecked Sendable {
-    private let lock = NSLock()
-    private var data = Data()
-    let closed = DispatchSemaphore(value: 0)
-    func append(_ chunk: Data) { lock.lock(); data.append(chunk); if data.count > 1024 { data = data.suffix(1024) }; lock.unlock() }
-    var text: String { lock.lock(); defer { lock.unlock() }; return String(decoding: data, as: UTF8.self) }
+    /// Loopback only, never through a proxy; a stream silent for 40 s (the gateway pings every 15 s) is a gateway
+    /// that stopped answering.
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = [kCFNetworkProxiesHTTPEnable: false, kCFNetworkProxiesHTTPSEnable: false, kCFNetworkProxiesSOCKSEnable: false]
+        config.timeoutIntervalForRequest = 40
+        config.timeoutIntervalForResource = 365 * 24 * 3600
+        return URLSession(configuration: config)
+    }()
+    private func watch() {
+        guard watcher == nil else { return }
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/tibot/events")!)
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        watcher = Task { [weak self] in
+            var delay = 0.5
+            while !Task.isCancelled {
+                do {
+                    let (bytes, response) = try await Self.session.bytes(for: request)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+                    for try await line in bytes.lines {
+                        guard let event = GatewayActivityEvent.streamLine(line) else { continue }
+                        if event.kind == "ready" { delay = 0.5 }
+                        self?.deliver(event)
+                    }
+                } catch {}
+                if Task.isCancelled { break }
+                self?.lost()
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)); delay = min(delay * 2, 5)
+            }
+        }
+    }
+    private func deliver(_ event: GatewayActivityEvent) {
+        if event.kind == "ready" { running = true }
+        onEvent?(event)
+    }
+    private func lost() {
+        guard running else { return }
+        running = false
+        onEvent?(.init(kind: "stopped", reason: L("网关没有响应", "the gateway is not answering")))
+    }
+    private static func run(_ tool: String, _ arguments: [String]) -> (status: Int32, output: String) {
+        let p = Process(), out = Pipe()
+        p.executableURL = URL(fileURLWithPath: tool); p.arguments = arguments
+        p.standardOutput = out; p.standardError = out
+        guard (try? p.run()) != nil else { return (-1, "") }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return (p.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
 }

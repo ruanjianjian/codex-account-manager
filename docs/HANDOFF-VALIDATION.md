@@ -434,3 +434,28 @@ Tibot 有了英文界面。默认跟随系统：系统语言列表里只要有�
 | 真实：代理不通 | 通过 | 网关指向一个死代理端口：新版每次只试 1 个号，Codex 26 秒后停下并显示 `Cannot reach the Codex service … connection refused … not an account problem`；日志 30 次 `network_error`（`proxy_refused`），0 次暂停。同场景旧版 cbc6530：每次失败都暂停账号并回 503 `accounts_cooling`（带 `Retry-After: 15`），Codex 照着等了 436 秒，最后显示 `Every account is pausing after an upstream error` |
 | 独立评审 | 通过 | 另一个 agent 只看代码复现出 4 个问题，均已修并补测：空的 200 被当成回答（`TestAnEmptyReplyIsNotAnAnswer`）；服务端出错后下一个号因额度拒绝，原错误被「所有账号拒绝」盖掉（`TestServiceFailureIsNotHiddenByALaterAccountRefusal`）；Go 的代理 CONNECT 失败不带 proxyconnect，改为按请求是否走代理判定，用真实 transport + 真实代理测拒绝 / 断开 / 没开三种（`TestProxyFailuresAreNamedAsTheProxys`）；`response.incomplete` 结尾被报成中断（`TestAnIncompleteResponseIsAnAnswer`） |
 | 全部单测 | 通过 | Go 全过（含 `-race` 和 e2e：真实 CLI + 假上游）；Swift 117 项（1 项原有跳过） |
+
+## 2026-11-07 网关改成系统常驻，帮不上忙就用 Codex 自己的登录直连（v0.4.29）
+
+自检的结构问题：网关是 Tibot 的子进程。Tibot 一退出就把 Codex 改回直连、停掉网关；Tibot 被强退或卡死时，Codex 的配置还指着一个没人接的端口，已打开的会话全部报错；每次启动、更新、退出都要改写 `config.toml`，10-31 还因 Codex 同时改过配置而恢复失败。网关自己也会「一刀切」：读不到账号池、Codex 登录的号没连到 Tibot、认证记录读写失败、遇到不认识的接口，统统直接报错，而这些情况下 Codex 本来可以用自己的登录正常工作。请求路径上还有加锁写盘：每个成功回复都在共享锁里重写 `session-accounts.json`，登录记录每个请求都在锁里读写一次。
+
+改法：网关作为 launchd 用户代理常驻（`~/Library/LaunchAgents/io.github.ruanjianjian.codex-accounts.gateway.plist`，KeepAlive，运行 gateway 目录里的二进制副本），不随 Tibot 启停；退出 Tibot 不再改配置。网关帮不上忙时把请求原样用 Codex 自己的登录发出（记 `direct` 和原因）。关闭路由 = 新会话直连 + 网关把已打开的会话直连转发，不用重启 Codex。Tibot 通过 `GET /tibot/events` 看网关；换新二进制后 `POST /tibot/restart`，网关等在途请求结束再退出、由 launchd 换上新版。网关失联 10 秒 Tibot 重新拉起，30 秒仍不通才把 Codex 改回直连，恢复后自动接回。写盘全部移出锁：会话归属由后台每秒至多写一次，登录记录放内存、变化时在锁外保存。远程压缩等首字节的时间从 90 秒放宽到 5 分钟。
+
+| 测试需求点 | 是否通过 | 证据摘要 |
+|---|---|---|
+| 帮不上忙就直连 | 通过 | `TestCodexsOwnLoginGoesStraightThroughWhenTheGatewayCannotHelp`：读不到账号池（zstd 正文原样）、路由关闭、不认识的登录、不支持的接口四种，上游收到的都是 Codex 自己的 Authorization / chatgpt-account-id / 路径 / 查询 / 正文 / 编码，回复和 `Set-Cookie`、额度头原样回；池钥匙、错误钥匙、`/health` 都不会被转发 |
+| 池里没号能登录也直连 | 通过 | `TestNoAccountInThePoolGoesOnCodexsOwnLogin`：记 `direct` / `logins_expired`，用 Codex 自己的登录完成 |
+| 直连回复被掐断不装成完整 | 通过 | `TestADirectReplyCutOffIsNotEndedCleanly`：上游中途断开，Codex 端读到错误而不是干净结束 |
+| Tibot 实时看网关 | 通过 | `TestTibotSeesEventsLive`：先 `ready`，空闲时 15 秒一次 ping，请求的 routing / completed / finished 依次到达；Codex 登录打不开这个接口 |
+| 更新不切断回复 | 通过 | `TestRestartWaitsForTheReplyInFlight`：收到 restart 时还有一个流式回复在途，等它完整结束才停 |
+| 磁盘卡住不卡请求 | 通过 | `TestAStalledDiskDoesNotHoldRequests`：会话归属文件写进一个没人读的 FIFO（永久卡住），下一个请求仍在 1 秒内完成；`TestAnUnwritableRegistryStillRecognizesTheDesktop`：登录记录目录只读时桌面登录照常识别（旧版回 503） |
+| 真实 CLI 端到端 | 通过 | `go test -tags e2e`（内置 CLI 0.166 + 假上游）：原有 8 步全过；新增「路由关闭走 Codex 自己的号」「再打开回到路由」「没连到 Tibot 的登录直接用它自己的号回复」（旧版这一步是 401） |
+| 真实：常驻安装 | 通过 | 本机从 0.4.28 换到测试版：launchd 里 `state = running`，程序是 gateway 目录的副本，3 秒内 Codex 配置接回网关 |
+| 真实：路由 | 通过 | 池钥匙 `codex exec`（gpt-6-astra）回复 `RESIDENT-1`；桌面登录直发 `/backend-api/codex/responses` 回复 `NATIVE-1`，走 account-88e59fa8 |
+| 真实：退出 Tibot | 通过 | 退出后网关进程还在、`config.toml` 仍指向网关；池钥匙和桌面登录各一次请求都正常回复（`AFTER-QUIT`、`AFTER-QUIT-NATIVE`） |
+| 真实：路由关闭直连 | 通过 | 池里写 `off`：桌面登录请求记 `direct` / `routing_off`，上游的 429 `usage_limit_reached`（桌面这个号本周已用完）原样回到客户端——路由开着时同一请求走的是有额度的号 |
+| 真实：网关被强杀 | 通过 | `kill -9` 后 launchd 0.2 秒拉起新进程，下一次请求 `AFTER-KILL` 正常 |
+| 真实：更新换二进制 | 通过 | 先让一个不同的网关二进制在跑，发起长回复后启动 Tibot：03:52:53 收到 restart，在途回复 03:52:57 完成，03:52:58 新版 `ready`；装好的副本与包内一致；期间用户自己的 Codex 会话也正常完成 |
+| 真实：网关被卸掉 / 被停用 | 通过 | `launchctl bootout` 后 Tibot 12 秒内重新装上，Codex 配置没动；`launchctl disable` + `bootout` 后 31 秒 Codex 配置改回直连，重新允许后 1 秒接回网关 |
+| 独立评审 | 通过 | 另一个 agent 只看代码，复现出 2 个 P1 和若干 P2，均已修并补测。(1) 直连路径先于 426 判断，Codex 的 WebSocket 握手被拆成普通 GET 发上游，每个会话首轮多等约 7 秒：`TestAWebSocketIsRefusedBeforeAnythingGoesDirect`；e2e 新增「WebSocket 不得以普通 GET 到达上游」，在修之前的代码上失败（7 次）。(2) Tibot 不在时池子冻结，额度已恢复的号仍回 429：池里加 `back`（所有用完的窗口都重置的时刻），过了就重试；池子 10 分钟没更新且全显示用完时，Codex 自己的登录直连让服务端判断（`TestAPoolTibotNoLongerUpdatesDoesNotLockCodexOut`）。(3) 关闭路由时 Tibot 写的池子没有 clients，所有请求都成了 `unknown_login`，还清空了记住的登录：现在保留已连接身份（`TestRoutingOffAsTibotWritesIt`）。(4) SIGTERM 后 3 毫秒就退出，15 秒宽限从未生效：`TestSIGTERMWaitsForTheRequestInFlight`（编译真二进制）。(5) 更新排空改用 Shutdown，回复写完、检查后才到的请求也等。(6) ping 先拿共享锁、读一次池子，请求卡住时 ping 停（`TestPingsStopWhileRequestsAreStuck`）；池子读不了时 Tibot 的接口用 local.key 认证，不会把正在直连服务的网关当成挂了（`TestTibotsEndpointsWorkWithoutAPool`）。(7) 退出 Tibot 时网关不通则先改回直连。(8) 直连时丢掉别的号签发的 turn state（`TestADirectRequestDropsAnotherAccountsTurnState`）。(9) 直连的非回复接口用 5 分钟等首字节；启动 agent 失败不再立刻改回直连（先开始监听，交给 30 秒规则）；「被系统停用」按 `launchctl print-disabled` 判断 |
+| 全部单测 | 通过 | Go 全过（含 `-race` 和 e2e）；Swift 122 项（1 项原有跳过）；安装脚本 18 项 |

@@ -44,13 +44,32 @@ type account struct {
 	Reset     float64 `json:"reset"`
 	// Under Tibot's reserve line: used only when no account with more left can take the request.
 	Low bool `json:"low"`
+	// When every spent window of an unavailable account has reset (Unix seconds; 0 unknown). Past it the account
+	// is tried again even if Tibot, not running, never wrote that it came back.
+	Back float64 `json:"back,omitempty"`
 }
+
+// The account can take new requests by its quota as last reported.
+func (a account) usable(now time.Time) bool {
+	return a.Available || (a.Back > 0 && float64(now.Unix()) >= a.Back)
+}
+
 type config struct {
-	Key       string           `json:"key"`
-	Preferred string           `json:"preferred"`
-	Accounts  []account        `json:"accounts"`
-	Clients   []clientIdentity `json:"clients,omitempty"`
+	Key       string `json:"key"`
+	Preferred string `json:"preferred"`
+	// Routing is switched off in Tibot: Codex's own login goes straight to the service, as without Tibot.
+	Off      bool             `json:"off,omitempty"`
+	Accounts []account        `json:"accounts"`
+	Clients  []clientIdentity `json:"clients,omitempty"`
+	// When Tibot wrote the pool (zero: unknown). Tibot rewrites it every few seconds while it runs.
+	written time.Time
 }
+
+// Tibot has not written the pool for a while: it is not running, and the quota it last reported may be old.
+func (c config) stale(now time.Time) bool {
+	return !c.written.IsZero() && now.Sub(c.written) > 10*time.Minute
+}
+
 type event struct {
 	Request string `json:"request,omitempty"`
 	Session string `json:"session,omitempty"`
@@ -71,17 +90,30 @@ type binding struct {
 	Until time.Time
 }
 type gateway struct {
-	native     *nativeAuth
-	config     func() (config, error)
-	base       string
-	client     *http.Client
-	emit       func(event)
+	native *nativeAuth
+	config func() (config, error)
+	base   string
+	client *http.Client
+	// Remote compaction: the service reads the whole conversation before its first byte.
+	slow *http.Client
+	sink func(event)
+	// Tibot's live view of the events (GET /tibot/events).
+	hub hub
+	// Codex requests being served, so a restart for an update waits for none.
+	inflight atomic.Int64
+	// Set by main: POST /tibot/restart asks for a restart once no request is being served.
+	onRestart func()
+	// Tibot's key on disk, for Tibot's endpoints when the pool cannot be read.
+	keyFile    string
 	mu         sync.Mutex
 	stickyFile string
 	sticky     map[string]binding
-	rest       map[string]time.Time
-	limited    map[string]limit
-	strikes    map[string][]strike
+	// Wakes the writer of stickyFile; nothing is written to disk while a request holds mu.
+	stickyWake  chan struct{}
+	stickyWrite sync.Mutex
+	rest        map[string]time.Time
+	limited     map[string]limit
+	strikes     map[string][]strike
 }
 
 // One conversation the service failed on an account (a 5xx, or a stream that failed before any output).
@@ -115,7 +147,27 @@ func newGateway(read func() (config, error), base string, emit func(event)) *gat
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 90 * time.Second
 	tr.Proxy = newSystemProxy().For
-	return &gateway{config: read, base: base, client: &http.Client{Transport: tr, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, emit: emit, sticky: map[string]binding{}, rest: map[string]time.Time{}, limited: map[string]limit{}, strikes: map[string][]strike{}}
+	slow := tr.Clone()
+	slow.ResponseHeaderTimeout = 5 * time.Minute
+	noRedirect := func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	return &gateway{config: read, base: base, sink: emit, hub: hub{subs: map[chan event]struct{}{}},
+		client: &http.Client{Transport: tr, CheckRedirect: noRedirect}, slow: &http.Client{Transport: slow, CheckRedirect: noRedirect},
+		sticky: map[string]binding{}, stickyWake: make(chan struct{}, 1), rest: map[string]time.Time{}, limited: map[string]limit{}, strikes: map[string][]strike{}}
+}
+
+func (g *gateway) emit(e event) {
+	if g.sink != nil {
+		g.sink(e)
+	}
+	g.hub.publish(e)
+}
+
+// The client for a route: remote compaction may think for minutes before its first byte.
+func (g *gateway) clientFor(path string) *http.Client {
+	if path == "/responses/compact" {
+		return g.slow
+	}
+	return g.client
 }
 
 type requestTraceKey struct{}
@@ -150,6 +202,7 @@ func readConfig(path string) (config, error) {
 	if len(c.Key) < 32 {
 		return c, errors.New("missing local key")
 	}
+	c.written = st.ModTime()
 	return c, err
 }
 func fail(w http.ResponseWriter, status int, msg string) {
@@ -190,11 +243,6 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.emitRequest(r, e)
 		fail(w, status, msg)
 	}
-	c, err := g.config()
-	if err != nil {
-		reject(503, "pool_unavailable", "", "Account pool unavailable; refresh accounts in the menu-bar app.")
-		return
-	}
 	host := r.Host
 	if h, _, e := net.SplitHostPort(host); e == nil {
 		host = h
@@ -210,15 +258,58 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimPrefix(authorization, "Bearer ")
-	nativeAccount := ""
-	if g.native != nil {
-		var authErr error
-		c, nativeAccount, authErr = g.native.authenticate(c, key, r.Header.Get("chatgpt-account-id"))
-		if authErr != nil {
-			g.emit(event{Kind: "local_auth_unavailable", Status: 503})
-			fail(w, 503, "Local credential registry unavailable; check account manager diagnostics.")
-			return
+	path := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/backend-api/codex"), "/v1")
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		// Expected on every turn: Codex falls back to HTTP at once. Before anything goes direct: a WebSocket cannot
+		// be passed on, and stripped to a plain GET it costs Codex seconds of reconnect attempts.
+		fail(w, http.StatusUpgradeRequired, "Use HTTP Responses streaming.")
+		return
+	}
+	// The gateway's own endpoints, for Tibot; everything else is a Codex request.
+	local := strings.HasPrefix(r.URL.Path, "/tibot/") || r.URL.Path == "/health"
+	if !local {
+		g.inflight.Add(1)
+		defer g.inflight.Add(-1)
+	}
+	// Codex signed in with its own ChatGPT login can always be served as if Tibot were not there: whenever the
+	// gateway cannot help (no pool, routing off, a login Tibot does not know, a route it does not handle), the
+	// request goes straight to the service with that login. Codex never stops because of Tibot.
+	nativeAccount := "" // the connected account the caller's own login belongs to, once known
+	direct := func(reason string) bool {
+		if local || !ownLogin(key) {
+			return false
 		}
+		g.direct(w, r, path, nil, reason, nativeAccount)
+		return true
+	}
+	c, err := g.config()
+	if strings.HasPrefix(r.URL.Path, "/tibot/") {
+		// Tibot's own endpoints work with an unreadable pool too, so Tibot never takes a gateway that is serving
+		// Codex for a dead one.
+		switch {
+		case !g.isTibot(key, c, err):
+			fail(w, 401, "Invalid local gateway key.")
+		case r.URL.Path == "/tibot/events" && r.Method == "GET":
+			g.events(w, r)
+		case r.URL.Path == "/tibot/restart" && r.Method == "POST":
+			if g.onRestart != nil {
+				g.onRestart()
+			}
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			fail(w, 404, "Unsupported gateway route.")
+		}
+		return
+	}
+	if err != nil {
+		if !direct("pool_unavailable") {
+			reject(503, "pool_unavailable", "", "Account pool unavailable; open Tibot so it can write it again.")
+		}
+		return
+	}
+	poolKey := subtle.ConstantTimeCompare([]byte(key), []byte(c.Key)) == 1
+	if g.native != nil && !poolKey {
+		c, nativeAccount = g.native.authenticate(c, key, r.Header.Get("chatgpt-account-id"))
 	}
 	for _, a := range c.Accounts {
 		if a.Expires > float64(time.Now().Unix()) && len(a.Access) > 0 && subtle.ConstantTimeCompare([]byte(key), []byte(a.Access)) == 1 {
@@ -229,7 +320,11 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if nativeAccount == "" && subtle.ConstantTimeCompare([]byte(key), []byte(c.Key)) != 1 {
+	if nativeAccount == "" && !poolKey {
+		// A login Tibot has not connected (or one it cannot check now): Codex still works, on that login.
+		if direct("unknown_login") {
+			return
+		}
 		g.emit(event{Kind: "local_auth_rejected", Status: 401})
 		fail(w, 401, "Invalid local gateway key.")
 		return
@@ -239,18 +334,19 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"ready":true}`)
 		return
 	}
-	path := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/backend-api/codex"), "/v1")
-	if path == "/responses" && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		// Expected on every turn: the client falls back to HTTP. Not a refusal worth recording.
-		fail(w, http.StatusUpgradeRequired, "Use HTTP Responses streaming.")
+	if c.Off && direct("routing_off") {
 		return
 	}
 	if r.Method == "GET" && path == "/models" {
-		g.models(w, r, c)
+		if !g.models(w, r, c) && !direct("models_unavailable") {
+			fail(w, 503, "Model catalog unavailable.")
+		}
 		return
 	}
 	if r.Method != "POST" || (path != "/responses" && path != "/responses/compact") {
-		reject(404, "unsupported_route", "", "Unsupported gateway route.")
+		if !direct("route") {
+			reject(404, "unsupported_route", "", "Unsupported gateway route.")
+		}
 		return
 	}
 	compressed := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
@@ -335,7 +431,18 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reject(409, stuck, owner, "This conversation continues a response stored on account "+owner+", which is unavailable now (quota, cooldown or expired login). Wait for it to recover or start a new conversation.")
 		return
 	case len(candidates) == 0:
-		g.refuse(w, r, g.verdict(c, "no_available_account", "No available account. Refresh or reconnect accounts in Tibot."))
+		v := g.verdict(c, "no_available_account", "No available account. Refresh or reconnect accounts in Tibot.")
+		// Nothing in the pool can sign in, or the pool's quota is old news (Tibot is not running to say an account
+		// came back): Codex's own login can still try, and the service says whether it may.
+		if (v.reason == "no_accounts" || v.reason == "logins_expired" || v.reason == "usage_limit" && c.stale(time.Now())) && !poolKey && ownLogin(key) {
+			reason := v.reason
+			if reason == "usage_limit" {
+				reason = "pool_stale"
+			}
+			g.direct(w, r, path, body, reason, nativeAccount)
+			return
+		}
+		g.refuse(w, r, v)
 		return
 	}
 	owner := g.owner(session, guess)
@@ -356,14 +463,14 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		g.emitRequest(r, event{Kind: "routing", Account: a.ID, Session: session})
 		started := time.Now()
-		res, err := g.client.Do(req)
+		res, err := g.clientFor(path).Do(req)
 		if err != nil {
 			if r.Context().Err() != nil {
 				return
 			}
 			// Every account goes through this Mac's network and proxy, so none would get through and none is
 			// at fault: Codex hears it at once, with what failed, and retries on its own.
-			g.unreachable(w, r, req, a, err, started)
+			g.unreachable(w, r, req, a.ID, err, started)
 			return
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
@@ -400,7 +507,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if eventStream(res.Header.Get("Content-Type"), reply) {
 			done, f = g.stream(w, r, reply, res, a, session, last, started)
 		} else if b, e := io.ReadAll(io.LimitReader(reply, 32<<20)); e != nil {
-			done = r.Context().Err() != nil || g.unreachable(w, r, req, a, e, started)
+			done = r.Context().Err() != nil || g.unreachable(w, r, req, a.ID, e, started)
 		} else if len(b) == 0 {
 			done, f = g.closedEarly(w, r, a, last, started), faultUpstream
 		} else {
@@ -456,9 +563,13 @@ func (g *gateway) verdict(c config, reason, msg string) verdict {
 		case g.limited[a.ID].until.After(now):
 			limited++
 			soonest(&back, g.limited[a.ID].until)
-		case !a.Available:
+		case !a.usable(now):
 			limited++
-			soonest(&back, time.Unix(int64(a.Reset), 0))
+			if a.Back > 0 {
+				soonest(&back, time.Unix(int64(a.Back), 0))
+			} else {
+				soonest(&back, time.Unix(int64(a.Reset), 0))
+			}
 		case g.rest[a.ID].After(now):
 			soonest(&retry, g.rest[a.ID])
 		default: // usable, yet it declined this request
@@ -630,16 +741,16 @@ func networkFault(err error, proxied bool) string {
 }
 
 var networkWords = map[string]string{
-	"header_timeout": "no reply within 90 seconds", "upstream": "the proxy could not connect onward",
+	"header_timeout": "no reply in time", "upstream": "the proxy could not connect onward",
 	"dns": "name lookup failed", "refused": "connection refused", "reset": "connection reset",
 	"tls": "secure connection failed", "timeout": "connection timed out", "eof": "connection closed",
 }
 
 // A network failure ends the request at once, with no account paused and none tried in its place. Always
 // answers Codex, so it returns true for the caller's done.
-func (g *gateway) unreachable(w http.ResponseWriter, r *http.Request, upstream *http.Request, a account, err error, started time.Time) bool {
+func (g *gateway) unreachable(w http.ResponseWriter, r *http.Request, upstream *http.Request, id string, err error, started time.Time) bool {
 	reason := networkFault(err, g.proxied(upstream))
-	g.emitRequest(r, event{Kind: "network_error", Account: a.ID, Reason: reason, MS: since(started)})
+	g.emitRequest(r, event{Kind: "network_error", Account: id, Reason: reason, MS: since(started)})
 	what := networkWords[strings.TrimPrefix(reason, "proxy_")]
 	if what == "" {
 		what = "network error"
@@ -755,7 +866,7 @@ func (g *gateway) candidates(c config, session string, pinned bool, guess, nativ
 			}
 			continue
 		}
-		if a.Available {
+		if a.usable(now) {
 			out = append(out, a)
 		}
 	}
@@ -819,13 +930,35 @@ func (g *gateway) remember(session, id string) {
 		}
 	}
 	g.sticky[session] = binding{ID: id, Until: time.Now().Add(365 * 24 * time.Hour)}
-	if g.stickyFile != "" {
-		if data, err := json.Marshal(g.sticky); err == nil {
-			temp := g.stickyFile + ".tmp"
-			if os.WriteFile(temp, data, 0600) == nil {
-				os.Rename(temp, g.stickyFile)
-			}
-		}
+	select {
+	case g.stickyWake <- struct{}{}:
+	default:
+	}
+}
+
+// Writes the conversations' owners to disk off the request path, at most once a second: a disk that stalls
+// must not hold the lock every request needs (2026-10-31: one stalled write froze every Codex request).
+func (g *gateway) keepSticky() {
+	for range g.stickyWake {
+		time.Sleep(time.Second)
+		g.saveSticky()
+	}
+}
+func (g *gateway) saveSticky() {
+	if g.stickyFile == "" {
+		return
+	}
+	g.mu.Lock()
+	data, err := json.Marshal(g.sticky)
+	g.mu.Unlock()
+	if err != nil {
+		return
+	}
+	g.stickyWrite.Lock()
+	defer g.stickyWrite.Unlock()
+	temp := g.stickyFile + ".tmp"
+	if os.WriteFile(temp, data, 0600) == nil {
+		os.Rename(temp, g.stickyFile)
 	}
 }
 func (g *gateway) cool(id string, until time.Time) {
@@ -868,7 +1001,9 @@ func (g *gateway) request(r *http.Request, path string, body []byte, a account, 
 	}
 	return q, nil
 }
-func (g *gateway) models(w http.ResponseWriter, r *http.Request, c config) {
+
+// The model catalog from the first account that answers; false when none did and nothing was written.
+func (g *gateway) models(w http.ResponseWriter, r *http.Request, c config) bool {
 	for _, a := range c.Accounts {
 		if a.Access == "" || a.Expires <= float64(time.Now().Unix()) {
 			continue
@@ -886,10 +1021,10 @@ func (g *gateway) models(w http.ResponseWriter, r *http.Request, c config) {
 		// 304: the catalog Codex holds (its If-None-Match etag) is still current.
 		if e == nil && (res.StatusCode == 200 || res.StatusCode == 304) {
 			relay(w, res, b, a.ID)
-			return
+			return true
 		}
 	}
-	fail(w, 503, "Model catalog unavailable.")
+	return false
 }
 
 type streamEvent struct {
@@ -1006,7 +1141,7 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, reader *bufio.R
 			}
 			return true, faultNone
 		case err != io.EOF:
-			return g.unreachable(w, r, res.Request, a, err, started), faultNone
+			return g.unreachable(w, r, res.Request, a.ID, err, started), faultNone
 		}
 		return g.closedEarly(w, r, a, last, started), faultUpstream
 	}
@@ -1017,12 +1152,16 @@ func (g *gateway) stream(w http.ResponseWriter, r *http.Request, reader *bufio.R
 // (2026-10-31: one event write stalled under the old shared lock for an hour, and no request got past its first event).
 func eventSink(app io.Writer, logPath string) func(event) {
 	toApp, toLog := make(chan event, 512), make(chan event, 512)
-	go func() {
-		out := json.NewEncoder(app)
-		for e := range toApp {
-			out.Encode(e)
-		}
-	}()
+	if app != nil {
+		go func() {
+			out := json.NewEncoder(app)
+			for e := range toApp {
+				out.Encode(e)
+			}
+		}()
+	} else {
+		toApp = nil // a nil channel is never ready: nothing is queued for nobody
+	}
 	go func() {
 		for e := range toLog {
 			appendLog(logPath, e)
@@ -1063,30 +1202,18 @@ func main() {
 	desktopAuth := flag.String("desktop-auth", "", "trusted local desktop auth file (never a request parameter)")
 	flag.Parse()
 	host, _, e := net.SplitHostPort(*addr)
-	if e != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-		fmt.Fprintln(os.Stderr, "loopback address required")
+	if e != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() || *path == "" {
+		fmt.Fprintln(os.Stderr, "loopback address and configuration path required")
 		os.Exit(1)
 	}
-	if _, e = readConfig(*path); e != nil {
-		fmt.Fprintln(os.Stderr, "gateway configuration unavailable")
-		os.Exit(1)
-	}
-	emit := eventSink(os.Stdout, filepath.Join(filepath.Dir(*path), "requests.jsonl"))
+	// launchd keeps the gateway running whether Tibot runs or not. A missing or unreadable pool is no reason
+	// to stop: Codex's own login still goes straight through until Tibot writes the pool again.
+	emit := eventSink(nil, filepath.Join(filepath.Dir(*path), "requests.jsonl"))
 	g := newGateway(func() (config, error) { return readConfig(*path) }, upstream, emit)
 	if *desktopAuth != "" {
 		g.native = &nativeAuth{path: *desktopAuth, cache: filepath.Join(filepath.Dir(*path), "client-auth-hashes.json")}
-		c, err := readConfig(*path)
-		if err == nil {
-			err = g.native.validateDesktop(c)
-		}
-		if err == nil {
-			_, _, err = g.native.authenticate(c, "", "")
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "local credential registry unavailable")
-			os.Exit(1)
-		}
 	}
+	g.keyFile = filepath.Join(filepath.Dir(*path), "local.key")
 	g.stickyFile = filepath.Join(filepath.Dir(*path), "session-accounts.json")
 	if st, err := os.Lstat(g.stickyFile); err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0077 == 0 && st.Size() < 1<<20 {
 		if data, err := os.ReadFile(g.stickyFile); err == nil {
@@ -1096,22 +1223,34 @@ func main() {
 			}
 		}
 	}
+	go g.keepSticky()
 	ln, e := net.Listen("tcp", *addr)
 	if e != nil {
 		fmt.Fprintln(os.Stderr, "gateway port is already occupied")
 		os.Exit(1)
 	}
 	s := &http.Server{Handler: g, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	// Serve returns as soon as a shutdown begins; the process waits here until the replies in flight are done.
+	stopped := make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(stopped) }) }
+	var restart sync.Once
+	g.onRestart = func() { restart.Do(func() { go func() { g.drain(s); finish() }() }) }
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-ctx.Done()
-		c, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		s.Shutdown(c)
+		// launchd waits 20 s after SIGTERM (bootout, logout) before it kills the process.
+		shutdown(s, g, 15*time.Second)
+		finish()
 	}()
 	emit(event{Kind: "ready"})
-	if e = s.Serve(ln); e != nil && e != http.ErrServerClosed {
+	e = s.Serve(ln)
+	if e == http.ErrServerClosed {
+		<-stopped
+	}
+	g.saveSticky()
+	if e != nil && e != http.ErrServerClosed {
 		os.Exit(1)
 	}
 }

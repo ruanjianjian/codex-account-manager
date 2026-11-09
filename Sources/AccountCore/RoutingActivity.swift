@@ -27,7 +27,7 @@ public enum GatewayFault {
         let proxy = reason.hasPrefix("proxy_")
         let what: String
         switch proxy ? String(reason.dropFirst(6)) : reason {
-        case "header_timeout": what = L("90 秒没等到回复", "no reply within 90 seconds")
+        case "header_timeout": what = L("迟迟没等到回复", "no reply in time")
         case "upstream": what = L("代理连不到服务", "the proxy could not connect onward")
         case "dns": what = L("域名解析失败", "name lookup failed")
         case "refused": what = L("连接被拒绝", "connection refused")

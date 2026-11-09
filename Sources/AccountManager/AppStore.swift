@@ -198,11 +198,11 @@ enum SlotStatus: Equatable {
             let kind = event.kind, id = event.account, code = event.status
             switch kind {
             case "ready":
-                guard self.gatewayEnabled, self.gateway.running else { return }
-                do {
-                    try self.gateway.install(); self.gatewayReady = true
-                    self.gatewayCaption = self.restingGatewayCaption
-                } catch { self.gatewayReady = false; self.gatewayCaption = error.localizedDescription }
+                self.gatewayReady = true; self.gatewayDownSince = nil; self.gatewayKicked = false
+                guard self.gatewayEnabled else { return }
+                // Also after a fallback to direct: the gateway answers again, so Codex goes back through it.
+                do { try self.gateway.install(); self.gatewayCaption = self.restingGatewayCaption }
+                catch { self.gatewayCaption = error.localizedDescription }
             case "routing":
                 self.gatewayAccount = id
                 self.gatewayCaption = L("正在使用 \(id.flatMap { self.slot($0)?.displayName } ?? "账号")", "Using \(id.flatMap { self.slot($0)?.displayName } ?? "an account")")
@@ -215,30 +215,41 @@ enum SlotStatus: Equatable {
                 if let id, code == 401 { self.refresh(id) }
             case "network_error": self.gatewayCaption = GatewayFault.networkCaption(event.reason)
             case "interrupted": self.gatewayCaption = L("回复中断，未重复执行；请在 Codex 中重试", "The reply was cut off and not repeated; retry in Codex")
-            case "stopped": self.fallBackToDirect(L("网关已停止：\(event.reason ?? "进程已退出")", "Gateway stopped: \(event.reason ?? "the process exited")"))
+            case "stopped":
+                // launchd starts it again within seconds; Codex goes direct only if it stays away (see tick).
+                self.gatewayReady = false; self.gatewayAccount = nil
+                if self.gatewayDownSince == nil { self.gatewayDownSince = Date() }
+                if self.gatewayEnabled { self.gatewayCaption = L("网关重启中…", "The gateway is restarting…") }
+            case "restarting": if self.gatewayEnabled { self.gatewayCaption = L("网关更新中，等当前回复结束后切换", "Updating the gateway; it switches once the current replies finish") }
+            case "direct": if self.gatewayEnabled, let caption = self.directCaption(event.reason) { self.gatewayCaption = caption }
             case "rejected": if let caption = self.rejectionCaption(event) { self.gatewayCaption = caption }
             case "local_auth_rejected": self.gatewayCaption = L("桌面认证不匹配；请确认当前登录账号已连接到 Tibot", "Desktop login mismatch; make sure the signed-in account is connected to Tibot")
-            case "local_auth_unavailable": self.gatewayCaption = L("本机认证记录不可用；保留现场并检查私有文件权限", "Local login records are unavailable; nothing was changed. Check the private file permissions")
             default: break
             }
         }
         if gatewayEnabled || CommandLine.arguments.contains("--enable-gateway") { setGatewayEnabled(true) }
         else if gateway.configuration.installed { fallBackToDirect(L("自动路由未开启", "Auto routing is off")) }
     }
-    /// Never leave Codex pointed at a port nobody serves. Codex reloads config.toml for new and
-    /// resumed conversations, so restoring the direct provider recovers them; the toggle stays as chosen.
+    /// Never leave Codex pointed at a port nobody serves: when the gateway stays away, new and resumed
+    /// conversations go direct (Codex reloads config.toml for them). The gateway itself is launchd's; when it
+    /// answers again, "ready" puts Codex back through it. The toggle stays as chosen.
     private func fallBackToDirect(_ reason: String) {
         let wasInstalled = gateway.configuration.installed
-        // Restore first: if the provider table was edited elsewhere, a helper that still runs keeps serving.
         do { try gateway.configuration.restore() } catch {
             gatewayCaption = L("\(reason) · \(error.localizedDescription) 请在 ~/.codex/config.toml 删除 openai_base_url 一行后重启 Codex。", "\(reason) · \(error.localizedDescription) Delete the openai_base_url line in ~/.codex/config.toml, then restart Codex.")
-            if gateway.running { return }
-            gatewayReady = false; gatewayAccount = nil; routingActivity.receive(.init(kind: "stopped"))
             return
         }
-        try? gateway.stop(restore: false)
-        gatewayReady = false; gatewayAccount = nil; routingActivity.receive(.init(kind: "stopped"))
+        gatewayAccount = nil; routingActivity.receive(.init(kind: "stopped"))
         gatewayCaption = wasInstalled ? L("\(reason) · 已恢复直连，Codex 改用它自己登录的账号", "\(reason) · Back to direct: Codex uses its own signed-in account") : reason
+    }
+    /// The gateway sent a request straight through on Codex's own login; only reasons worth a line.
+    private func directCaption(_ reason: String?) -> String? {
+        switch reason {
+        case "unknown_login": return L("Codex 当前登录的账号未连接到 Tibot，正用它自己的账号直连", "The account Codex is signed in to is not connected to Tibot; it goes direct on its own account")
+        case "pool_unavailable": return L("网关读不到账号池，Codex 正用它自己的账号直连", "The gateway cannot read the account pool; Codex goes direct on its own account")
+        case "no_accounts", "logins_expired": return L("账号池里没有能登录的账号，Codex 正用它自己的账号直连", "No account in the pool can sign in; Codex goes direct on its own account")
+        default: return nil
+        }
     }
     /// Only reasons a Codex conversation can cause; local probes (for example a web page) never change the caption.
     private func rejectionCaption(_ event: GatewayActivityEvent) -> String? {
@@ -260,12 +271,8 @@ enum SlotStatus: Equatable {
     private func updateGatewayPool() throws {
         guard usesFileCredentials else { throw GatewayConfigurationError.credentials }
         let desktopURL = sharedDesktop.home.appendingPathComponent("auth.json")
+        // A desktop login Tibot does not know is fine: the gateway sends it straight through on its own login.
         let desktopData = desktopURL.standardizedFileURL == desktopURL.resolvingSymlinksInPath() ? try? Data(contentsOf: desktopURL) : nil
-        let identities = saved.accounts.compactMap { slot in slot.expectedAccountID.map { GatewayClientIdentity(id: slot.id, accountID: $0) } }
-        guard let desktopData, let desktop = try? DesktopCredential(desktopData),
-              identities.contains(where: { $0.accountID == desktop.accountID }),
-              let desktopValue = try? GatewayAccount(id: "desktop", credential: desktop, available: true, reset: 0),
-              desktopValue.expires > Date().timeIntervalSince1970 else { throw GatewayConfigurationError.desktopIdentity }
         var accounts: [GatewayAccount] = []
         for slot in saved.accounts {
             guard let expected = slot.expectedAccountID else { continue }
@@ -277,9 +284,13 @@ enum SlotStatus: Equatable {
             let windows = slot.snapshot?.rates.windows ?? []
             let spent = windows.contains { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
             if let value = try? GatewayAccount(id: slot.id, credential: credential, available: !spent, reset: windows.quotaReset ?? 0,
-                                               low: RoutingReserve.low(windows, now: now)) { accounts.append(value) }
+                                               low: RoutingReserve.low(windows, now: now), back: GatewayAccount.back(windows, now: now)) { accounts.append(value) }
         }
-        try gateway.save(accounts: accounts, preferred: gatewayPreferred, clients: identities)
+        try gateway.save(accounts: accounts, preferred: gatewayPreferred, clients: gatewayIdentities)
+    }
+    /// The connected accounts' identities (no tokens): which logins the gateway may recognize as Tibot's.
+    private var gatewayIdentities: [GatewayClientIdentity] {
+        saved.accounts.compactMap { slot in slot.expectedAccountID.map { GatewayClientIdentity(id: slot.id, accountID: $0) } }
     }
     func setGatewayEnabled(_ enabled: Bool) {
         guard !preview, persistenceEnabled else { return }
@@ -289,14 +300,19 @@ enum SlotStatus: Equatable {
                     guard loginSlotID == nil, launchingDesktop.isEmpty else { throw GatewayConfigurationError.unavailable }
                     try updateGatewayPool(); try gateway.start()
                 } catch {
-                    // A gateway that already serves keeps serving; otherwise do not leave Codex on a dead port.
-                    if !gatewayReady { fallBackToDirect(error.localizedDescription) }
+                    // The agent may still be running and answer in a moment: the 30-second rule in tick decides
+                    // whether Codex goes direct, not this failure.
+                    if !gatewayReady, gatewayDownSince == nil { gatewayDownSince = Date() }
                     throw error
                 }
-                gatewayCaption = L("正在启动本机网关…", "Starting the local gateway…")
+                if gatewayReady { try gateway.install(); gatewayCaption = restingGatewayCaption }
+                else { gatewayCaption = L("正在启动本机网关…", "Starting the local gateway…"); if gatewayDownSince == nil { gatewayDownSince = Date() } }
             } else {
-                try gateway.stop(restore: true); routingActivity.receive(.init(kind: "stopped")); gatewayReady = false; gatewayAccount = nil
-                gatewayCaption = L("已恢复原配置 · 重启 Codex 生效", "Original config restored · restart Codex to apply")
+                // New chats go direct; chats already open still reach the gateway, which now sends them straight
+                // through on Codex's own login, so nothing needs a restart.
+                try gateway.configuration.restore(); try? gateway.saveOff(clients: gatewayIdentities)
+                routingActivity.receive(.init(kind: "stopped")); gatewayAccount = nil
+                gatewayCaption = L("已关闭 · Codex 用它自己登录的账号，已打开的会话照常可用", "Off · Codex uses its own signed-in account; open chats keep working")
             }
             gatewayEnabled = enabled; UserDefaults.standard.set(enabled, forKey: "gateway.enabled")
         } catch {
@@ -467,7 +483,9 @@ enum SlotStatus: Equatable {
     /// Live desktop owner; selection.json alone goes stale after a login inside Codex.
     private var desktopSelection: DesktopSelection? { sharedDesktop.selection(accounts: saved.accounts) }
     private var desktopSlotSeen: String?
-    private var unenrolledDesktopTicks = 0
+    /// Since when the gateway has not answered while it should (nil while it answers).
+    private var gatewayDownSince: Date?
+    private var gatewayKicked = false
     /// A collector created before a login inside Codex still points at its old home.
     private func retireCollectorsIfDesktopChanged() {
         let current = desktopSelection?.slotID
@@ -632,15 +650,19 @@ enum SlotStatus: Equatable {
     private func tick() {
         now = Date(); onChange?()
         retireCollectorsIfDesktopChanged()
-        // Never rewrite the token snapshot while the gateway is stopped.
-        if gatewayEnabled && gateway.running {
-            // A login inside Codex to an account the manager does not know can only get 401s from the
-            // gateway. Seen three ticks in a row (not one half-written auth.json), go direct instead.
-            unenrolledDesktopTicks = sharedDesktop.desktopAccountID() != nil && desktopSelection == nil ? unenrolledDesktopTicks + 1 : 0
-            if unenrolledDesktopTicks >= 3 {
-                unenrolledDesktopTicks = 0
-                fallBackToDirect(L("Codex 当前登录的账号未连接到 Tibot", "The account Codex is signed in to is not connected to Tibot"))
-            } else { do { try updateGatewayPool() } catch { gatewayCaption = error.localizedDescription } }
+        if gatewayEnabled {
+            do { try updateGatewayPool() } catch { gatewayCaption = error.localizedDescription }
+            // launchd restarts a gateway that exits. One that stays away (unloaded, disabled in Login Items, hung)
+            // is brought back once after 10 s, and after 30 s Codex goes direct until it answers again.
+            if !gatewayReady, let since = gatewayDownSince {
+                let down = Date().timeIntervalSince(since)
+                if down > 10 && !gatewayKicked { gatewayKicked = true; gateway.revive() }
+                if down > 30 && gateway.configuration.installed {
+                    let holder = gateway.portHolder()
+                    fallBackToDirect(holder.map { L("端口 \(gateway.port) 被 \($0) 占用，网关起不来", "Port \(gateway.port) is taken by \($0), so the gateway cannot start") }
+                                     ?? L("网关 30 秒没有响应", "The gateway has not answered for 30 s"))
+                }
+            }
         }
         if !waitForPrivateBuild {
             importFromPrivateBuild()
@@ -849,7 +871,7 @@ enum SlotStatus: Equatable {
     }
     private var restingGatewayCaption: String {
         guard gatewayEnabled else { return L("自动路由未开启", "Auto routing is off") }
-        return gatewayReady ? L("网关就绪 · 支持新旧会话，升级后重启 Codex", "Gateway ready · new and existing chats; restart Codex after upgrading")
+        return gatewayReady ? L("网关就绪 · 退出或更新 Tibot 也照常路由", "Gateway ready · keeps routing when Tibot quits or updates")
             : L("正在启动本机网关…", "Starting the local gateway…")
     }
     func setAutoUpdate(_ on: Bool) {
@@ -1417,8 +1439,10 @@ enum SlotStatus: Equatable {
         } catch { banner = L("登录时启动未设置成功，可在系统设置 → 通用 → 登录项中添加 Tibot。", "Could not turn on Open at login. Add Tibot in System Settings → General → Login Items.") }
     }
     func shutdown() {
-        // Keep the routing preference for the next launch, but leave Codex on the direct provider while we are gone.
-        try? gateway.configuration.restore(); try? gateway.stop(restore: false)
+        // The gateway is launchd's and keeps serving Codex while Tibot is gone, on the pool written last. One that
+        // is not answering now has nobody left to notice, so Codex goes direct until Tibot is back.
+        if gatewayEnabled && !gatewayReady { try? gateway.configuration.restore() }
+        gateway.stopWatching()
         personalXTask?.cancel(); xBrowser?.stop()
         timer?.invalidate(); resetCheckTask?.cancel()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }

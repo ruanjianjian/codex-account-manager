@@ -1,13 +1,13 @@
 import Foundation
 
 public enum GatewayConfigurationError: LocalizedError {
-    case conflict, credentials, unavailable, desktopIdentity
+    case conflict, credentials, unavailable, disabled
     public var errorDescription: String? {
         switch self {
         case .conflict: return L("Codex 配置已被其他程序修改，自动恢复已停止。备份仍保留在网关目录。", "Another program changed the Codex config, so auto restore stopped. The backup is still in the gateway folder.")
         case .credentials: return L("请先连接账号并启用本地文件存储，再启用自动路由。", "Connect an account and turn on local file storage before turning on auto routing.")
         case .unavailable: return L("本机网关启动失败；请检查端口占用后重试。", "The local gateway failed to start. Check whether the port is in use and try again.")
-        case .desktopIdentity: return L("Codex 当前登录未匹配已连接账号，或桌面凭据已过期。请先将当前账号连接到 Tibot；未修改 Codex 配置。", "Codex is signed in to an account Tibot has not connected, or the desktop login expired. Connect the current account to Tibot first; the Codex config was left unchanged.")
+        case .disabled: return L("网关被系统停用了：请在 系统设置 → 通用 → 登录项 里允许 Tibot 在后台运行。", "macOS stopped the gateway: allow Tibot in System Settings → General → Login Items.")
         }
     }
 }
@@ -141,21 +141,34 @@ public struct GatewayAccount: Codable {
     public let available: Bool
     public let reset: Double
     public let low: Bool
-    public init(id: String, credential: DesktopCredential, available: Bool, reset: Double, low: Bool = false) throws {
+    /// When every spent window has reset (0 when none is spent or a reset time is unknown): the gateway tries the
+    /// account again past it, even while Tibot is not running to say it came back.
+    public let back: Double
+    public init(id: String, credential: DesktopCredential, available: Bool, reset: Double, low: Bool = false, back: Double = 0) throws {
         let raw = try JSONSerialization.jsonObject(with: credential.data) as? [String: Any]
         guard let token = (raw?["tokens"] as? [String: Any])?["access_token"] as? String else { throw GatewayConfigurationError.credentials }
         guard let exp = JWTClaims.decode(token)?["exp"] as? Double else { throw GatewayConfigurationError.credentials }
         self.id = id; self.accountID = credential.accountID; self.access = token; self.expires = exp
-        self.available = available; self.reset = reset; self.low = low
+        self.available = available; self.reset = reset; self.low = low; self.back = back
+    }
+    /// The moment the spent windows have all reset; 0 if none is spent or one has no reset time.
+    public static func back(_ windows: [QuotaWindow], now: Date = Date()) -> Double {
+        let spent = windows.filter { ($0.remaining ?? 100) <= 0 && ($0.resetDate ?? .distantFuture) > now }
+        guard !spent.isEmpty, spent.allSatisfy({ $0.resetDate != nil }) else { return 0 }
+        return spent.compactMap { $0.resetDate?.timeIntervalSince1970 }.max() ?? 0
     }
 }
 
 public struct GatewayPool: Codable {
     public let key: String
     public let preferred: String
+    /// Routing is off: Codex's own login goes straight to the service, as without Tibot.
+    public let off: Bool
     public let accounts: [GatewayAccount]
     public let clients: [GatewayClientIdentity]
-    public init(key: String, preferred: String, accounts: [GatewayAccount], clients: [GatewayClientIdentity] = []) { self.key = key; self.preferred = preferred; self.accounts = accounts; self.clients = clients }
+    public init(key: String, preferred: String, accounts: [GatewayAccount], clients: [GatewayClientIdentity] = [], off: Bool = false) {
+        self.key = key; self.preferred = preferred; self.off = off; self.accounts = accounts; self.clients = clients
+    }
 }
 
 public struct GatewayClientIdentity: Codable {
